@@ -1,0 +1,46 @@
+{
+    "config": {
+        "common": {
+            "HOST": "127.0.0.1",
+            "PORT": 8008,
+            "VERSION": "v1",
+            "URL_PREFIX": "api",
+            "DEFAULT_DEBUG": true,
+            "THREADS_PER_PAGE": 2,
+            "CSRF_ENABLED": true,
+            "CSRF_SESSION_KEY": ""
+        },
+        "env": {
+            "production": {
+                "ENV": "production",
+                "DEBUG": false,
+                "DEVELOPMENT": false,
+                "DATABASE_CONNECTION_OPTIONS": {
+                    "DATABASE": "",
+                    "DB_HOST": "",
+                    "DB_PORT": "",
+                    "DB_USER": "",
+                    "DB_PASSWD": "",
+                    "DB_NAME": "",
+                    "CONNECT_TIMEOUT": 5,
+                    "SECRET_KEY" : ""
+                }
+            },
+            "development": {
+                "ENV": "development",
+                "DEBUG": true,
+                "DEVELOPMENT": true,
+                "DATABASE_CONNECTION_OPTIONS": {
+                    "DATABASE": "MySQL",
+                    "DB_HOST": "127.0.0.1",
+                    "DB_PORT": 3306,
+                    "DB_USER": "root",
+                    "DB_PASSWD": "",
+                    "DB_NAME": "pertanian",                    
+                    "CONNECT_TIMEOUT": 5,
+                    "SECRET_KEY" : ""
+                }
+            }
+        }
+    }
+}
