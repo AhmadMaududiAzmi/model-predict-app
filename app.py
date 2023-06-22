@@ -6,13 +6,13 @@ import pymysql
 app = Flask(__name__)
 
 # Configuration to MySQL
-CONNECTION = pymysql.connect(
-    HOST='localhost',
-    USER='root',
-    PASSWORD='',
-    DATABASE='pertanian'
+conn = pymysql.connect(
+    host='localhost',
+    user='root',
+    password='',
+    database='pertanian'
 )
-cursor = CONNECTION.cursor()
+cursor = conn.cursor()
 
 # Train data and parse into dataframe
 def getDataframe(comodity, dateRange):
@@ -31,25 +31,15 @@ def getDataframe(comodity, dateRange):
     return df
 
 
-@app.route('/prediksi', methods=['POST'])
+@app.route('/getdata', methods=['GET'])
+def getDataframe():
+    msg = 'Hello world!'
+    print(msg)  
+    return msg
+
+@app.route('/prediksi', methods=['GET'])
 def predict(comodity, dateRange, request):
-    if request.method == 'GET':
-        comodity = ''
-        dateRange = []
-        percentage = 0
-
-        df = None
-
-        dateAwal = datetime.strptime(dateRange[0], '%Y/%m/%d').timestamp()
-        dateAkhir = datetime.strptime(dateRange[1], '%Y/%m/%d').timestamp()
-
-    elif request.method == 'POST':
-        request = ''
-
-    if comodity == '' or len(dateRange) == 0 or percentage == 0:
-        print('Silahkan isi terlebih dahulu')
-
-    return df
+    return
 
 
 @app.route('/train-data', methods=['POST'])
