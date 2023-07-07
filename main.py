@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import datetime
 import os
 import pymysql
@@ -7,6 +8,8 @@ from flask_cors import CORS
 from flask import Flask, redirect, jsonify, json, request, url_for, abort
 from db import Database
 from config import DevelopmentConfig as devconf
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.model_selection import train_test_split
 
 
 host = os.environ.get('FLASK_SERVER_HOST', devconf.HOST)
@@ -31,17 +34,17 @@ def get_response_msg(data, status_code):
     response_msg.status_code = status_code
     return response_msg
 
-
 app = create_app()
 wsgi_app = app.wsgi_app
 db = Database(devconf)
 
 # ==============================================[ Routes - Start ]
-# Get data From Database
+# Get data dari database
 @app.route(f"{route_prefix}/getcomodities", methods=["GET"])
 def getData():
     try:
-        query = f"SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Blimbing' GROUP BY tanggal"
+        # query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'Gula Pasir Dalam Negri' AND nm_pasar = 'Pasar Blimbing' GROUP BY tanggal"
+        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'Gula Pasir Dalam Negri'"
         records = db.run_query(query=query)
         response = get_response_msg(records, HTTPStatus.OK)
         db.close_connection()
@@ -51,57 +54,73 @@ def getData():
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
-# Preprocessing data
-    # Get data from getData()
-    # Mencari missing values pada harga_current lalu dihapus atau dihitung rata-ratanya untuk diisi ke dalam missing values
-    # Melakukan proses normalisasi dataframe yang sudah difilter sesuai inputan user
-    # Membagi data ke dalam data train dan data test lalu simpan ke dalam 2 dataframe (sesuai persenan yg diinputkan user)
-@app.route(f"{route_prefix}/getdataframe", methods=["GET", "POST"])
+# Fungsi untuk proses pengolahan data; missing values, scaler, normalization
+@app.route(f"{route_prefix}/getdataframe", methods=["GET"])
 def processData():
-    # Configuration database example
-    conn = pymysql.connect(
-        host="localhost",
-        user="root",
-        password="",
-        database="pertanian"
-    )
-    cursor = conn.cursor()
-
-    start_date = datetime.datetime(2016,1,10)
-    end_date = datetime.datetime(2017,1,10)
-
     try:
-        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Blimbing'"
-        df = pd.read_sql(query, conn, params=(start_date, end_date))
-        return df
+        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo'"
+        records = db.run_query(query=query)
+        db.close_connection()
+        data = pd.DataFrame(records, columns=['id', 'tanggal', 'nm_pasar', 'nm_komoditas', 'id_komuditas', 'harga_current'])
+        data['tanggal'] = pd.to_datetime(data['tanggal'])
+        data = data.sort_values('tanggal')
+
+        # Mengabaikan values harga_current = 0
+        # data = data[data['harga_current'] != 0]
+
+        # Menghitung rata-rata tiap bulan untuk mengisi values harga_current = 0
+        data['tanggal'] = pd.to_datetime(data['tanggal'])
+        data['bulan'] = data['tanggal'].dt.month
+        monthly_avg = data.groupby('bulan')['harga_current'].mean()
+        data.loc[data['harga_current'] == 0, 'harga_current'] = data['bulan'].map(monthly_avg) 
+        
+        # Normalisasi menggunakan MinMaxScaler()
+        scaler = MinMaxScaler()
+        data['harga_scaled'] = scaler.fit_transform(data[['harga_current']])
+
+        # Split data ke data train dan data test
+        X = data.drop('harga_current', axis=1)
+        y = data['harga_current']
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        return process_function(X_train, X_test)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
-# Train data train
+def process_function(data_train, data_test):
+    processed_data = {
+        'data_train': data_train.to_dict(orient='records'),
+        'data_test': data_test.to_dict(orient='records')
+    }
+    return jsonify(processed_data)
+
+# Fungsi untuk melakukan train data
 @app.route(f"{route_prefix}/traindata", methods=['GET', 'POST'])
 def trainData():
-    if request.method == 'GET':
-        print('GET')
-        return
-    if request.method == 'POST':
-        print('POST')
-        return
+    try:
+        if request.method == 'GET':
+            return
+        if request.method == 'POST':
+            print('POST')
+            return
+    except pymysql.MySQLError as err:
+        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
+    except Exception as e:
+        abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
-# Proses Prediksi
+# Fungsi prediksi menggunakan LSTM
 @app.route(f"{route_prefix}/prediksi", methods=['GET', 'POST'])
 def prediksi():
     try:
         # Mengambil data train untuk pelatian model
-        df = getData()
-
-        dtMin = df.loc[df.index.min(), 'tanggal']
-        dtMax = df.loc[df.index.max(), 'tanggal']
         # Membuat model prediksi
         # Melakukan training pada data train (sesuai jumlah persenan yg diinputkan user)
         # Melakukan training pada data testing
         # Save data to json and visualize it to graph (plot graph)
+        a = 'halo'
+        return a
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
