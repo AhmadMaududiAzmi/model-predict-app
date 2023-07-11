@@ -3,13 +3,19 @@ import numpy as np
 import datetime
 import os
 import pymysql
+
 from http import HTTPStatus
 from flask_cors import CORS
-from flask import Flask, redirect, jsonify, json, request, url_for, abort
+from flask import Flask, redirect, jsonify, json, request, url_for, abort, g
 from db import Database
 from config import DevelopmentConfig as devconf
-from sklearn.preprocessing import MinMaxScaler
+
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, LabelEncoder
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
+
+from keras.models import Sequential
+from keras.layers import Dense, LSTM
 
 
 host = os.environ.get('FLASK_SERVER_HOST', devconf.HOST)
@@ -24,7 +30,6 @@ def create_app():
     app.config.from_object(devconf)
     return app
 
-
 def get_response_msg(data, status_code):
     message = {
         'status': status_code,
@@ -33,6 +38,19 @@ def get_response_msg(data, status_code):
     response_msg = jsonify(message)
     response_msg.status_code = status_code
     return response_msg
+
+# Evaluasi model prediksi
+def evaluate_model(model, X_test, y_test, y_pred):
+    # Menghitung Mape
+    mape = mean_absolute_percentage_error(y_test, y_pred) * 100
+
+    # Menghitung RMSE
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
+    # Menghitung MSE
+    mse = mean_squared_error(y_test, y_pred)
+
+    return mape, rmse, mse
 
 app = create_app()
 wsgi_app = app.wsgi_app
@@ -74,14 +92,14 @@ def processData():
         monthly_avg = data.groupby('bulan')['harga_current'].mean()
         data.loc[data['harga_current'] == 0, 'harga_current'] = data['bulan'].map(monthly_avg) 
         
-        # Normalisasi menggunakan MinMaxScaler()
-        scaler = MinMaxScaler()
-        data['harga_scaled'] = scaler.fit_transform(data[['harga_current']])
-
         # Split data ke data train dan data test
         X = data.drop('harga_current', axis=1)
         y = data['harga_current']
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Normalisasi menggunakan MinMaxScaler()
+        scaler = MinMaxScaler()
+        data['harga_scaled'] = scaler.fit_transform(data[['harga_current']])
 
         return process_function(X_train, X_test)
     except pymysql.MySQLError as err:
@@ -96,15 +114,66 @@ def process_function(data_train, data_test):
     }
     return jsonify(processed_data)
 
-# Fungsi untuk melakukan train data
-@app.route(f"{route_prefix}/traindata", methods=['GET', 'POST'])
+# Sintaks asli disimpan di simpan.py. Saat ini sebagai percobaan
+# Melakukan train model dengan menggunakan data train
+@app.route(f"{route_prefix}/traindata", methods=["GET", "POST"])
 def trainData():
     try:
-        if request.method == 'GET':
-            return
-        if request.method == 'POST':
-            print('POST')
-            return
+        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo'"
+        records = db.run_query(query=query)
+        db.close_connection()
+        data = pd.DataFrame(records, columns=['id', 'tanggal', 'nm_pasar', 'nm_komoditas', 'id_komuditas', 'harga_current'])
+        data['tanggal'] = pd.to_datetime(data['tanggal'])
+        data = data.sort_values('tanggal')
+        data['tanggal_epoch'] = data['tanggal'].apply(lambda x: x.timestamp())
+
+        # Menghitung rata-rata tiap bulan untuk mengisi values harga_current = 0
+        data['tanggal'] = pd.to_datetime(data['tanggal'])
+        data['bulan'] = data['tanggal'].dt.month
+        monthly_avg = data.groupby('bulan')['harga_current'].mean()
+        data.loc[data['harga_current'] == 0, 'harga_current'] = data['bulan'].map(monthly_avg) 
+        
+        # # Normalisasi menggunakan MinMaxScaler()
+        scaler = MinMaxScaler()
+        data['harga_scaled'] = scaler.fit_transform(data[['harga_current']])
+
+        # Split data ke data train dan data test
+        X = data['tanggal_epoch'].values.reshape(-1, 1)
+        y = data['harga_scaled'].values
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+        # Model LSTM
+        model = Sequential()
+        model.add(LSTM(50, return_sequences=True, input_shape=(1, 1)))
+        model.add(LSTM(50))
+        model.add(Dense(25))
+        model.add(Dense(1))
+        model.compile(optimizer='adam', loss='mse')
+
+        # Train data
+        model.fit(X_train, y_train, epochs=100, batch_size=32)
+
+        # Loss function
+        loss = model.evaluate(X_test, y_test)
+
+        # # Prediksi
+        # y_pred = model.predict(X_test)
+
+        # # Mengembalikan hasil prediksi ke dalam skala semula
+        # y_pred_inverse = scaler.inverse_transform(y_pred)
+
+        # # Membuat dictionary hasil prediksi
+        # results = []
+        # for i in range(len(X_test)):
+        #     result = {
+        #         'Data ke': i + 1,
+        #         'Tanggal': str(X_test[i][0]),
+        #         'Prediksi': float(y_pred_inverse[i][0])
+        #     }
+        #     results.append(result)
+
+        return "Model trained successfully"
+        # return jsonify(results)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
@@ -130,9 +199,8 @@ def prediksi():
 @app.route(f"{route_prefix}/health", methods=['GET'])
 def health():
     try:
-        db_status = "Tersambung ke DB" if db.db_connection_status else "Tidak dapat tersambung ke DB"
-        response = get_response_msg("Anda masuk " + db_status, HTTPStatus.OK)
-        return response
+        print("Hello")
+        return "Halo tersampaikan"
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
