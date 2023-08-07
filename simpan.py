@@ -1,74 +1,59 @@
-# Prediksi menggunakan model LSTM
-@app.route(f"{route_prefix}/prediksi", methods=['GET'])
-def prediksi():
+# Get data dari database
+@app.route(f"{route_prefix}/getcomodities", methods=["GET"])
+def getData():
     try:
-        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'Gula Pasir Dalam Negri' AND nm_pasar = 'Pasar Senenan'"
+        # query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'Gula Pasir Dalam Negri' AND nm_pasar = 'Pasar Blimbing' GROUP BY tanggal"
+        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'Gula Pasir Dalam Negri'"
+        records = db.run_query(query=query)
+        response = get_response_msg(records, HTTPStatus.OK)
+        db.close_connection()
+        return response
+    except pymysql.MySQLError as err:
+        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
+    except Exception as e:
+        abort(HTTPStatus.BAD_REQUEST, description=str(e))
+
+# Fungsi untuk proses pengolahan data; missing values, scaler, normalization
+@app.route(f"{route_prefix}/getdataframe", methods=["GET"])
+def processData():
+    try:
+        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo'"
         records = db.run_query(query=query)
         db.close_connection()
-
-        # Get data dan parsing menjadi time series
         data = pd.DataFrame(records, columns=['id', 'tanggal', 'nm_pasar', 'nm_komoditas', 'id_komuditas', 'harga_current'])
         data['tanggal'] = pd.to_datetime(data['tanggal'])
         data = data.sort_values('tanggal')
-        data['tanggal_epoch'] = data['tanggal'].apply(lambda x: x.timestamp())
+
+        # Mengabaikan values harga_current = 0
+        # data = data[data['harga_current'] != 0]
 
         # Menghitung rata-rata tiap bulan untuk mengisi values harga_current = 0
         data['tanggal'] = pd.to_datetime(data['tanggal'])
         data['bulan'] = data['tanggal'].dt.month
         monthly_avg = data.groupby('bulan')['harga_current'].mean()
-        data.loc[data['harga_current'] == 0, 'harga_current'] = data['bulan'].map(monthly_avg)
+        data.loc[data['harga_current'] == 0, 'harga_current'] = data['bulan'].map(monthly_avg) 
         
+        # Split data ke data train dan data test
+        X = data.drop('harga_current', axis=1)
+        y = data['harga_current']
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
         # Normalisasi menggunakan MinMaxScaler()
-        # scaler = MinMaxScaler()
-        # data['harga_scaled'] = scaler.fit_transform(data[['harga_current']])
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        data_scaled = scaler.fit_transform(data)
+        scaler = MinMaxScaler()
+        data['harga_scaled'] = scaler.fit_transform(data[['harga_current']])
 
-        # # Split data ke data train dan data test
-        X = data['tanggal_epoch'].values.reshape(-1, 1)
-        y = data['harga_scaled'].values
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=32)
-
-        # # Model LSTM
-        # model = Sequential()
-        # model.add(LSTM(64, return_sequences=True, input_shape=(1, 1)))
-        # model.add(LSTM(64))
-        # model.add(Dense(25))
-        # model.add(Dense(1))
-        # model.compile(optimizer='adam', loss='mse')
-
-        # # Train data
-        # model.fit(X_train, y_train, epochs=150, batch_size=32)
-
-        # Get model dari joblib (model yang disimpan)
-        loaded_model = joblib.load('trained_model.joblib')
-
-        # Mengambil tanggal terakhir dari data historis
-        last_date = data['tanggal'].iloc[-1]
-
-        # Membuat data tanggal untuk 30 hari ke depan
-        future_dates = [last_date + timedelta(days=i) for i in range(1, 60)]
-
-        # Mengubah data tanggal menjadi nilai epoch
-        future_dates_epoch = np.array([date.timestamp() for date in future_dates]).reshape(-1, 1)
-
-        # Melakukan prediksi menggunakan model LSTM
-        # y_pred_scaled = model.predict(future_dates_epoch)
-        y_pred_scaled = loaded_model.predict(future_dates_epoch)
-
-        # Mengembalikan hasil prediksi ke dalam skala semula
-        y_pred = scaler.inverse_transform(y_pred_scaled)
-
-        prediction_results = {
-            'Tanggal Prediksi': [date.strftime('%Y-%m-%d') for date in future_dates],
-            'Harga Prediksi': y_pred.flatten().tolist()
-        }
-
-        return jsonify(prediction_results)
+        return process_function(X_train, X_test)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
+
+def process_function(data_train, data_test):
+    processed_data = {
+        'data_train': data_train.to_dict(orient='records'),
+        'data_test': data_test.to_dict(orient='records')
+    }
+    return jsonify(processed_data)
 
 # Melakukan train model dengan menggunakan data train
 @app.route(f"{route_prefix}/trainData", methods=["GET", "POST"])
@@ -110,6 +95,173 @@ def trainData():
             model.save('trained_model.h5')
 
             return "Model trained and saved successfully." 
+    except pymysql.MySQLError as err:
+        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
+    except Exception as e:
+        abort(HTTPStatus.BAD_REQUEST, description=str(e))
+
+# Predict function
+@app.route(f"{route_prefix}/predict", methods=['POST'])
+def predict():
+    try:
+        # Get data depending on user input from laravel
+        data = request.json
+        nm_komoditas = data.get('nm_komoditas')
+        nm_pasar = data.get('nm_pasar')
+        tanggal_awal = data.get('tglAwal')
+        tanggal_akhir = data.get('tglAkhir')
+
+        # Get data from database for filtering data
+        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE nm_komoditas = %s AND nm_pasar = %s AND tanggal BETWEEN %s AND %s"
+        records = db.run_query(query=query)
+        db.close_connection()
+        
+        # Parsing menjadi time series
+        dateParse = lambda x: pd.to_datetime(x)
+        dataset = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
+        dataset['tanggal'] = dataset['tanggal'].apply(dateParse)
+        dataset = dataset.sort_values('tanggal')
+        dataset.set_index('tanggal', inplace=True)
+
+        # Preprocessing data
+        # Perhitungan rata-rata untuk mengisi data harga_current = 0
+        avg_harga_current = dataset['harga_current'].mean()
+        dataset['harga_current'] = dataset['harga_current'].replace(0, avg_harga_current)
+        # Normalisasi data
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        data_scaled = scaler.fit_transform(dataset[['harga_current']])
+
+        # Dataframe data yang sudah diolah
+        df = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
+        
+        
+        # ---------------------------------------------------------- #
+        # Pembagian dataset menjadi data train dan data test
+        # Menggunakan scikit-learn
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            # Mengubah datasest menjadi array 3 dimension
+        SEQUENCE_DATA = 30
+        X_train_3d = np.array([X_train[i:i+SEQUENCE_DATA] for i in range(len(X_train) - SEQUENCE_DATA + 1)])
+        X_test_3d = np.array([X_test[i:i+SEQUENCE_DATA] for i in range(len(X_test) - SEQUENCE_DATA + 1)])
+
+        # ------- #
+        # Menggunakan pytorch
+        dataset = TensorDataset(X, y)
+        train_size = int(0.8 * len(dataset))
+        test_size = len(dataset) - train_size
+        train_data, test_data = random_split(dataset, [train_size, test_size])
+        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=True)
+        test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=True)
+            # Mengubah datasest menjadi array 3 dimension
+        sequence_length = 10  # Panjang sequence yang diinginkan
+        X_train_3d = torch.cat([X[train_indices[i]:train_indices[i]+sequence_length].unsqueeze(0) for i in range(len(train_indices) - sequence_length + 1)], dim=0)
+        X_test_3d = torch.cat([X[test_indices[i]:test_indices[i]+sequence_length].unsqueeze(0) for i in range(len(test_indices) - sequence_length + 1)], dim=0)
+
+        # ------- #
+        # Menggunakan NumPy
+        indices = np.arange(len(dataset))
+        np.random.shuffle(indices)
+        split = int(0.8 * len(dataset))
+        train_indices, test_indices = indices[:split], indices[split:]
+        X_train, X_test = X[train_indices], X[test_indices]
+        y_train, y_test = y[train_indices], y[test_indices]
+            # Mengubah datasest menjadi array 3 dimension
+        SEQUENCE_DATA = 30
+        X_train_3d = np.array([X[train_indices[i]:train_indices[i]+SEQUENCE_DATA] for i in range(len(train_indices) - SEQUENCE_DATA + 1)])
+        X_test_3d = np.array([X[test_indices[i]:test_indices[i]+SEQUENCE_DATA] for i in range(len(test_indices) - SEQUENCE_DATA + 1)])
+        # ---------------------------------------------------------- #
+
+        # ---------------------------------------------------------- #
+        # Pembagian data (data train dan data test)
+        train_size = int(len(df) * 0.8) # Persentase data train adalah 0.8 (80%) untuk saat ini
+        
+        # Prepare data train
+        data_train = df[:train_size]
+
+        # Pembentukan sequences data / data time series dari data train untuk model prediksi
+        SEQUENCE_DATA = 30 # Menggunakan 30 data sebagai inputan model LSTM. Sehingga tidak keseluruhan data train menjadi 1 inputan ke dalam model LSTM
+        xTrain = []
+        yTrain = []
+        for i in range(SEQUENCE_DATA, len(data_train)):
+            xTrain.append(data_train[i-SEQUENCE_DATA:i]['harga_current'].values)
+            yTrain.append(data_train.iloc[i]['harga_current'])
+
+        # Convert trained x dan y sebagai numpy array
+        xTrain, yTrain = np.array(xTrain), np.array(yTrain)
+
+        # Bentuk ulang x trained data menjadi array 3 dimension
+        xTrain = np.reshape(xTrain, (xTrain.shape[0], xTrain.shape[1], 1))
+        # ---------------------------------------------------------- #
+
+        # Model LSTM
+        model = Sequential()
+        model.add(LSTM(64, return_sequences=True, input_shape=(xTrain.shape[1], 1)))
+        model.add(LSTM(64, return_sequences=False))
+        model.add(Dense(25))
+        model.add(Dense(1))
+        model.compile(optimizer='adam', loss='mean_squared_error')
+
+        # Train data
+        model.fit(xTrain, yTrain, epochs=100, batch_size=32)
+
+        # Save model yang sudah dilatih
+        # model.save('model_trained.h5')
+
+        # Panggil model yang sudah dilatih
+        # loaded_model = load_model("model_trained.h5")
+
+        # ---------------------------------------------------------- #
+        # Prepare data test
+        data_test = df[train_size:]
+
+        # Pembentukan sequences data / data time series dari data test untuk model prediksi
+        xTest = []
+        yTest = []
+        for i in range(SEQUENCE_DATA, len(data_test)):
+            xTest.append(data_test.iloc[i - SEQUENCE_DATA:i]['harga_current'].values)
+            yTest.append(data_test.iloc[i]['harga_current'])
+        
+        # xTest = []
+        # yTest = df[train_size:, :]
+        # for i in range(SEQUENCE_DATA, len(data_test)):
+        #     xTest.append(data_test[i - SEQUENCE_DATA:i]['harga_current'].values)
+        
+        # Convert tested x dan y sebagai numpy array
+        xTest, yTest = np.array(xTest), np.array(yTest)
+
+        # Bentuk ulang x tested data menjadi array 3 dimension
+        xTest = np.reshape(xTest, (xTest.shape[0], xTest.shape[1], 1))
+        # ---------------------------------------------------------- #
+
+        # Melakukan prediksi pada data test
+        # predictions = loaded_model.predict(xTest)
+        predictions = model.predict(xTest)
+        predictions = scaler.inverse_transform(predictions) # Mengembalikan values data ke bentuk asal sebelum dinormalisasi
+
+        # Evaluasi model menggunakan RMSE
+        mse = mean_squared_error(yTest, predictions)
+        rmse = np.sqrt(mse)
+        result = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(rmse)
+
+        # Pembuatan data train dan data valid untuk ditampilkan dalam grafik
+        train = df.loc[:train_size, ['tanggal', 'harga_current']]
+        valid = df.loc[train_size:, ['tanggal', 'harga_current']]
+
+        # Pembuatan dataframe untuk hasil prediksi yang sudah dilakukan
+        # dfPredictions = pd.DataFrame(predictions, columns=['predictions'], index=data.index).reset_index()
+        predictions_dict = {'tanggal': data.index[SEQUENCE_DATA:].tolist(), 'predictions': predictions[:, 0].tolist()}
+
+        # Pembuatan index 'tanggal'
+        # dfPredictions = dfPredictions.reset_index()
+        # valid = valid.reset_index()
+
+        # Penggabungan data valid dengan data prediksi
+        # valid = pd.concat([valid, dfPredictions], axis=1)
+
+        # Print
+        data_json = json.dumps(predictions_dict)
+
+        return data_json
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:

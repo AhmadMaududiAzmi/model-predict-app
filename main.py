@@ -9,7 +9,7 @@ import joblib
 
 from http import HTTPStatus
 from flask_cors import CORS
-from flask import Flask, redirect, jsonify, json, url_for, abort, render_template, Response
+from flask import Flask, redirect, jsonify, json, url_for, abort, request
 from db import Database
 from config import DevelopmentConfig as devconf
 
@@ -19,6 +19,7 @@ from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
 
 from keras.models import Sequential, load_model
 from keras.layers import Dense, LSTM
+from keras.preprocessing.sequence import TimeseriesGenerator
 
 
 host = os.environ.get('FLASK_SERVER_HOST', devconf.HOST)
@@ -60,64 +61,6 @@ wsgi_app = app.wsgi_app
 db = Database(devconf)
 
 # ==============================================[ Routes - Start ]
-# Get data dari database
-@app.route(f"{route_prefix}/getcomodities", methods=["GET"])
-def getData():
-    try:
-        # query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'Gula Pasir Dalam Negri' AND nm_pasar = 'Pasar Blimbing' GROUP BY tanggal"
-        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'Gula Pasir Dalam Negri'"
-        records = db.run_query(query=query)
-        response = get_response_msg(records, HTTPStatus.OK)
-        db.close_connection()
-        return response
-    except pymysql.MySQLError as err:
-        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
-    except Exception as e:
-        abort(HTTPStatus.BAD_REQUEST, description=str(e))
-
-# Fungsi untuk proses pengolahan data; missing values, scaler, normalization
-@app.route(f"{route_prefix}/getdataframe", methods=["GET"])
-def processData():
-    try:
-        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo'"
-        records = db.run_query(query=query)
-        db.close_connection()
-        data = pd.DataFrame(records, columns=['id', 'tanggal', 'nm_pasar', 'nm_komoditas', 'id_komuditas', 'harga_current'])
-        data['tanggal'] = pd.to_datetime(data['tanggal'])
-        data = data.sort_values('tanggal')
-
-        # Mengabaikan values harga_current = 0
-        # data = data[data['harga_current'] != 0]
-
-        # Menghitung rata-rata tiap bulan untuk mengisi values harga_current = 0
-        data['tanggal'] = pd.to_datetime(data['tanggal'])
-        data['bulan'] = data['tanggal'].dt.month
-        monthly_avg = data.groupby('bulan')['harga_current'].mean()
-        data.loc[data['harga_current'] == 0, 'harga_current'] = data['bulan'].map(monthly_avg) 
-        
-        # Split data ke data train dan data test
-        X = data.drop('harga_current', axis=1)
-        y = data['harga_current']
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
-        # Normalisasi menggunakan MinMaxScaler()
-        scaler = MinMaxScaler()
-        data['harga_scaled'] = scaler.fit_transform(data[['harga_current']])
-
-        return process_function(X_train, X_test)
-    except pymysql.MySQLError as err:
-        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
-    except Exception as e:
-        abort(HTTPStatus.BAD_REQUEST, description=str(e))
-
-def process_function(data_train, data_test):
-    processed_data = {
-        'data_train': data_train.to_dict(orient='records'),
-        'data_test': data_test.to_dict(orient='records')
-    }
-    return jsonify(processed_data)
-
-# Sintaks asli disimpan di simpan.py. Saat ini sebagai percobaan
 # Melakukan train model dengan menggunakan data train
 @app.route(f"{route_prefix}/traindata", methods=["GET", "POST"])
 def trainData():
@@ -198,8 +141,6 @@ def predict():
 
         # Dataframe data yang sudah diolah
         df = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
-        
-        # Tambahkan proses agar model get data start dan end timestamp sesuai inputan user
 
         # Pembagian data (data train dan data test)
         train_size = int(len(df) * 0.8) # Persentase data train adalah 0.8 (80%) untuk saat ini
@@ -248,10 +189,10 @@ def predict():
             xTest.append(data_test.iloc[i - SEQUENCE_DATA:i]['harga_current'].values)
             yTest.append(data_test.iloc[i]['harga_current'])
         
-        xTest = []
-        yTest = df[train_size:, :]
-        for i in range(SEQUENCE_DATA, len(data_test)):
-            xTest.append(data_test[i - SEQUENCE_DATA:i]['harga_current'].values)
+        # xTest = []
+        # yTest = df[train_size:, :]
+        # for i in range(SEQUENCE_DATA, len(data_test)):
+        #     xTest.append(data_test[i - SEQUENCE_DATA:i]['harga_current'].values)
         
         # Convert tested x dan y sebagai numpy array
         xTest, yTest = np.array(xTest), np.array(yTest)
@@ -292,7 +233,6 @@ def predict():
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
-        # traceback.print_exc()
 
 # Add new predict data
 @app.route(f"{route_prefix}/addPredict", methods=['GET'])
