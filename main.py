@@ -21,7 +21,6 @@ import tensorflow as tf
 from keras.models import Sequential, load_model
 from keras.layers import Dense, LSTM
 
-
 host = os.environ.get('FLASK_SERVER_HOST', devconf.HOST)
 port = os.environ.get('FLASK_SERVER_PORT', devconf.PORT)
 version = str(devconf.VERSION).lower()
@@ -46,6 +45,28 @@ def get_response_msg(data, status_code):
 app = create_app()
 wsgi_app = app.wsgi_app
 db = Database(devconf)
+
+# ==============================================[ Function - Start ]
+# Plot Graph (3 parameter; data_train, data_valid, data_prediction)
+def plot(dataset, plot_filename, data):
+    plt.figure(figsize=(12, 6))
+    plt.plot(dataset.index, dataset['data_test_unscaled'], label='Actual Prices')
+    plt.plot(dataset.index, dataset['predictions'], label='Predicted Prices')
+    plt.plot(data.index, data['harga_current'], label='Train Data', color='green')
+    plt.title('Actual vs Predicted Prices')
+    plt.xlabel('Years')
+    plt.ylabel('Price')
+    plt.legend()
+
+    plt.savefig(plot_filename, format='png')
+    plt.close()
+    return
+
+# Generate filename grafik sesuai data
+def generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
+    filename = f"plot_{nm_komoditas.replace(' ', '_')}_{nm_pasar.replace(' ', '_')}_{tanggal_awal.replace(' ', '_')}_{tanggal_akhir.replace(' ', '_')}.png"
+    return filename
+# ==============================================[ Function - End ]
 
 # ==============================================[ Routes - Start ]
 # Melakukan train model dengan menggunakan data train
@@ -107,13 +128,19 @@ def trainData():
 @app.route(f"{route_prefix}/predict", methods=['GET'])
 def predict():
     try:
-        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'Bawang Merah' AND nm_pasar = 'Pasar Dinoyo' GROUP BY tanggal"
+        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'Bawang Merah' AND nm_pasar = 'Pasar Wlingi' GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
 
+        # Get data from input user
+        nm_komoditas = 'Bawang Merah'
+        nm_pasar = 'Pasar Wlingi'
+        tanggal_awal = '2016-01-01'
+        tanggal_akhir = '2020-31-12'
+
         # Get data dan parsing menjadi time series
-        dateParse = lambda x: pd.to_datetime(x)
         data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
+        dateParse = lambda x: pd.to_datetime(x)
         data['tanggal'] = data['tanggal'].apply(dateParse)
         data = data.sort_values('tanggal')
         data.set_index('tanggal', inplace=True)
@@ -138,7 +165,7 @@ def predict():
         data_train = data_scaled[:train_size]
         jumlah_data_train = f"Jumlah data = {data_train.shape}"
 
-        # # Pembentukan sequences data / data time series dari data train untuk model prediksi
+        # Pembentukan sequences data / data time series dari data train untuk model prediksi
         SEQUENCE_DATA = 30 # Menggunakan 30 data sebagai inputan model LSTM. Sehingga tidak keseluruhan data train menjadi 1 inputan ke dalam model LSTM
         xTrain = []
         yTrain = []
@@ -197,17 +224,33 @@ def predict():
         akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(rmse)
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
-        data_predictions = pd.DataFrame(predictions, columns=['predictions'], index=data.index).reset_index()
-        data_test_df = pd.DataFrame(yTest_original, columns=['scaled_harga_current'])
+        data_predictions = pd.DataFrame(predictions.flatten(), columns=['predictions'], index=data.index[-len(predictions):])
+        data_valid = pd.DataFrame(yTest_original.flatten(), columns=['data_test_unscaled'], index=data.index[-len(predictions):])
 
         # Reset index kolom
-        data_predictions.reset_index(drop=True, inplace=True)
-        data_test_df.reset_index(drop=True, inplace=True)
+        # data_predictions.reset_index(drop=True, inplace=True)
+        # data_valid.reset_index(drop=True, inplace=True)
 
         # Penggabungan data asli dengan data prediksi
-        dataset = pd.concat([data_test_df, data_predictions], axis=1)
+        dataset = pd.concat([data_valid, data_predictions], axis=1)
+        dataset_json = dataset.to_json(orient='records')
 
-        return dataset
+        # Plot data (data_train, data_valid(red: data_test), data_predict) menjadi grafik
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(dataset.index, dataset['data_test_unscaled'], label='Actual')
+        ax.plot(dataset.index, dataset['predictions'], label='Predicted')
+        ax.plot(data.index, data['harga_current'], label='Train Data', linestyle='dashed', alpha=0.5)
+        ax.set_title('Actual vs. Predicted Prices\nRMSE: ' + str(rmse))
+        ax.set_xlabel('Years')
+        ax.set_ylabel('Prices')
+        ax.legend()
+
+        # Simpan gambar pada direktori sebagai PNG
+        plot_filename = generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir)
+        plt.savefig(plot_filename, format='png')
+        plt.close()
+
+        return send_file(plot_filename, mimetype='image/png')
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
@@ -215,30 +258,52 @@ def predict():
 
 # Add new predict data
 @app.route(f"{route_prefix}/addPredict", methods=['GET'])
-def addPredict():
+# Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
+def addPredict(next_predict = 30):
     try:
-        data_json = 123
-        return jsonify(data_json)
+        # Pengambilan variabel dengan global pada def predict()
+
+        # Dataset baru harga komoditas
+        new_dataset = pd.DataFrame(data_scaled, columns=['harga_current'], data=data.index).reset_index()
+         
+        # Prepare data train         
+        new_data_train = dataset[:train_size] # Data train
+        new_data_test = dataset[train_size:] # Data test
+
+        # Pembentukan sequences data / data time series dari data test untuk model prediksi
+        new_xTest = []
+        new_yTest = new_dataset[train_size:]
+        for i in range(SEQUENCE_DATA, len(new_data_test)):
+            new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
+
+        # Convert tested x dan y sebagai numpy array
+        new_xTest, new_yTest = np.array(new_xTest), np.array(new_yTest)
+
+        # Bentuk ulang x trained data menjadi array 3 dimension
+        new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
+
+        # Melakukan prediksi pada data test baru
+        new_predictions = model.predict(new_xTest)
+        new_predictions = scaler.inverse_transform(new_predictions)
+
+        new_yTest_original = scaler.inverse_transform(new_yTest.reshape(-1, 1))
+
+        # Evaluasi model menggunakan RMSE
+        new_mse = mean_squared_error(new_yTest, new_predictions)
+        # rmse = np.sqrt(mse)
+        new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
+        akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(new_rmse)}"
+
+        # Pembuatan dataframe setelah dilakukan pelatihan model
+        new_predicted_data = pd.DataFrame(new_predictions, columns=['predictions'])
+
+        # Pembuatan variabel pembanding antara data_train, data_valid, dan data_predictions yang baru
+
+        return
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
-
-# Testing for connecting to database (/api/v1/health)
-@app.route(f"{route_prefix}/health", methods=['GET'])
-def health():
-    try:
-        print("Hello")
-        return "Halo tersampaikan"
-    except pymysql.MySQLError as err:
-        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
-    except Exception as e:
-        abort(HTTPStatus.BAD_REQUEST, description=str(e))
-
-# /
-@app.route('/', methods=['GET'])
-def home():
-    return redirect(url_for('health'))
 # =================================================[ Routes - End ]
 
 # ================================[ Error Handler Defined - Start ]

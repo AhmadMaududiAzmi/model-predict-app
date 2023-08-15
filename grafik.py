@@ -21,7 +21,6 @@ import tensorflow as tf
 from keras.models import Sequential, load_model
 from keras.layers import Dense, LSTM
 
-
 host = os.environ.get('FLASK_SERVER_HOST', devconf.HOST)
 port = os.environ.get('FLASK_SERVER_PORT', devconf.PORT)
 version = str(devconf.VERSION).lower()
@@ -48,17 +47,21 @@ wsgi_app = app.wsgi_app
 db = Database(devconf)
 
 # =================================================[ Routes - End ]
+# Variabel-variabel
+SEQUENCE_DATA = 30
+NEXT_PREDICTION = 30
+
 # Plot grafik hasil prediksi
 @app.route(f"{route_prefix}/plot", methods=['GET'])
 def plot():
     try:
-        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'Bawang Merah' AND nm_pasar = 'Pasar Senenan' GROUP BY tanggal"
+        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'Bawang Merah' AND nm_pasar = 'Pasar Wlingi' GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
 
         # Get data dan parsing menjadi time series
-        dateParse = lambda x: pd.to_datetime(x)
         data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
+        dateParse = lambda x: pd.to_datetime(x)
         data['tanggal'] = data['tanggal'].apply(dateParse)
         data = data.sort_values('tanggal')
         data.set_index('tanggal', inplace=True)
@@ -72,8 +75,8 @@ def plot():
         data_scaled = scaler.fit_transform(data[['harga_current']])
         data_json = json.dumps(data_scaled.tolist())
 
-        # Data harga yang sudah diolah
-        # dataset = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
+        # Dataframe harga yang sudah diolah
+        dataset = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
 
         # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
         PERCENTAGE = 0.8 # Persentase data train adalah 0.8 (80%) untuk saat ini
@@ -84,7 +87,6 @@ def plot():
         jumlah_data_train = f"Jumlah data = {data_train.shape}"
 
         # # Pembentukan sequences data / data time series dari data train untuk model prediksi
-        SEQUENCE_DATA = 30 # Menggunakan 30 data sebagai inputan model LSTM. Sehingga tidak keseluruhan data train menjadi 1 inputan ke dalam model LSTM
         xTrain = []
         yTrain = []
         for i in range(SEQUENCE_DATA, len(data_train)):
@@ -133,13 +135,14 @@ def plot():
         # Mengembalikan values data ke bentuk asal sebelum dinormalisasi
         predictions = scaler.inverse_transform(predictions) 
 
-        # Mengembalikan nilai asli data test sebelum dinormalisasi
+        # Mengembalikan nilai asli data test sebelum dinormalisasi (red: data_valid)
         yTest_original = scaler.inverse_transform(yTest.reshape(-1, 1))
 
         # Evaluasi model menggunakan RMSE
         mse = mean_squared_error(yTest, predictions)
-        rmse = np.sqrt(mse)
-        akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(rmse)
+        # rmse = np.sqrt(mse)
+        rmse = np.sqrt(np.mean(predictions - yTest) ** 2)
+        akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(rmse)}"
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
         predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[-len(predictions):])
@@ -149,12 +152,12 @@ def plot():
         ax.plot(predicted_data.index, predicted_data['Actual'], label='Actual')
         ax.plot(predicted_data.index, predicted_data['Predicted'], label='Predicted')
         ax.plot(data.index, data['harga_current'], label='Train Data', linestyle='dashed', alpha=0.5)
-        ax.set_title('Hasil Prediksi vs. Data Asli\nRMSE: {:.2f}'.format(rmse))
+        ax.set_title('Hasil Prediksi vs. Data Asli\nRMSE: ' + str(rmse))
         ax.set_xlabel('Tanggal')
         ax.set_ylabel('Harga')
         ax.legend()
 
-        # Simpan gambar sebagai file PNG (tanpa perlu menyimpan dalam objek BytesIO)
+        # Simpan gambar sebagai file PNG
         plot_filename = 'plot.png'
         plt.savefig(plot_filename, format='png')
         plt.close()
@@ -165,6 +168,56 @@ def plot():
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
+
+# Add new predict data
+@app.route(f"{route_prefix}/addPredict", methods=['GET'])
+# Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
+def addPredict(next_predict = 30):
+    try:
+        # Pengambilan variabel dengan global pada def predict()
+
+        # Dataset baru harga komoditas
+        new_dataset = pd.DataFrame(data_scaled, columns=['harga_current'], data=data.index).reset_index()
+         
+        # Prepare data train         
+        new_data_train = dataset[:train_size] # Data train
+        new_data_test = dataset[train_size:] # Data test
+
+        # Pembentukan sequences data / data time series dari data test untuk model prediksi
+        new_xTest = []
+        new_yTest = new_dataset[train_size:]
+        for i in range(SEQUENCE_DATA, len(new_data_test)):
+            new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
+
+        # Convert tested x dan y sebagai numpy array
+        new_xTest, new_yTest = np.array(new_xTest), np.array(new_yTest)
+
+        # Bentuk ulang x trained data menjadi array 3 dimension
+        new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
+
+        # Melakukan prediksi pada data test baru
+        new_predictions = model.predict(new_xTest)
+        new_predictions = scaler.inverse_transform(new_predictions)
+
+        new_yTest_original = scaler.inverse_transform(new_yTest.reshape(-1, 1))
+
+        # Evaluasi model menggunakan RMSE
+        new_mse = mean_squared_error(new_yTest, new_predictions)
+        # rmse = np.sqrt(mse)
+        new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
+        akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(new_rmse)}"
+
+        # Pembuatan dataframe setelah dilakukan pelatihan model
+        new_predicted_data = pd.DataFrame(new_predictions, columns=['predictions'])
+
+        # Pembuatan variabel pembanding antara data_train, data_valid, dan data_predictions yang baru
+
+        return
+    except pymysql.MySQLError as err:
+        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
+    except Exception as e:
+        abort(HTTPStatus.BAD_REQUEST, description=str(e))
+
 # =================================================[ Routes - End ]
 
 # ================================[ Error Handler Defined - Start ]
