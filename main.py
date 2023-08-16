@@ -17,6 +17,7 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
 
+import threading
 import tensorflow as tf
 from keras.models import Sequential, load_model
 from keras.layers import Dense, LSTM
@@ -48,7 +49,7 @@ db = Database(devconf)
 
 # ==============================================[ Function - Start ]
 # Plot Graph (3 parameter; data_train, data_valid, data_prediction)
-def plot(dataset, plot_filename, data):
+def plotGrap(dataset, plot_filename, data):
     plt.figure(figsize=(12, 6))
     plt.plot(dataset.index, dataset['data_test_unscaled'], label='Actual Prices')
     plt.plot(dataset.index, dataset['predictions'], label='Predicted Prices')
@@ -60,7 +61,7 @@ def plot(dataset, plot_filename, data):
 
     plt.savefig(plot_filename, format='png')
     plt.close()
-    return
+    return plot_filename
 
 # Generate filename grafik sesuai data
 def generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
@@ -128,7 +129,7 @@ def trainData():
 @app.route(f"{route_prefix}/predict", methods=['GET'])
 def predict():
     try:
-        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'Bawang Merah' AND nm_pasar = 'Pasar Wlingi' GROUP BY tanggal"
+        query = "SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2016-03-30' AND komoditas_id = 8 AND pasar_id = 1 GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
 
@@ -162,7 +163,9 @@ def predict():
         train_size = int(len(data_scaled) * PERCENTAGE)
         
         # Prepare data train
+        # return 1
         data_train = data_scaled[:train_size]
+        data_train_json = data_train.tolist()
         jumlah_data_train = f"Jumlah data = {data_train.shape}"
 
         # Pembentukan sequences data / data time series dari data train untuk model prediksi
@@ -224,37 +227,67 @@ def predict():
         akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(rmse)
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
+        # return 2
         data_predictions = pd.DataFrame(predictions.flatten(), columns=['predictions'], index=data.index[-len(predictions):])
+        data_predictions_json = data_predictions.to_dict(orient='records')
+        # return 3
         data_valid = pd.DataFrame(yTest_original.flatten(), columns=['data_test_unscaled'], index=data.index[-len(predictions):])
-
+        data_valid_json = data_valid.to_dict(orient='records')
         # Reset index kolom
         # data_predictions.reset_index(drop=True, inplace=True)
         # data_valid.reset_index(drop=True, inplace=True)
 
         # Penggabungan data asli dengan data prediksi
         dataset = pd.concat([data_valid, data_predictions], axis=1)
-        dataset_json = dataset.to_json(orient='records')
+        # return 4
+        dataset_json = dataset.to_dict(orient='records')
 
         # Plot data (data_train, data_valid(red: data_test), data_predict) menjadi grafik
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(dataset.index, dataset['data_test_unscaled'], label='Actual')
-        ax.plot(dataset.index, dataset['predictions'], label='Predicted')
-        ax.plot(data.index, data['harga_current'], label='Train Data', linestyle='dashed', alpha=0.5)
-        ax.set_title('Actual vs. Predicted Prices\nRMSE: ' + str(rmse))
-        ax.set_xlabel('Years')
-        ax.set_ylabel('Prices')
-        ax.legend()
+        # fig, ax = plt.subplots(figsize=(12, 6))
+        # ax.plot(dataset.index, dataset['data_test_unscaled'], label='Actual')
+        # ax.plot(dataset.index, dataset['predictions'], label='Predicted')
+        # ax.plot(data.index, data['harga_current'], label='Train Data', linestyle='dashed', alpha=0.5)
+        # ax.set_title('Actual vs. Predicted Prices\nRMSE: ' + str(rmse))
+        # ax.set_xlabel('Years')
+        # ax.set_ylabel('Prices')
+        # ax.legend()
 
         # Simpan gambar pada direktori sebagai PNG
+        # return 5
         plot_filename = generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir)
-        plt.savefig(plot_filename, format='png')
-        plt.close()
-
-        return send_file(plot_filename, mimetype='image/png')
+        # plt.savefig(plot_filename, format='png')
+        # plt.close()
+        #grap = plotGrap(dataset, plot_filename, data)
+        thread = threading.Thread(target=plotGrap,args=(dataset, plot_filename, data))
+        thread.start()
+        arr = {
+            'filename' : plot_filename,
+            'data_predictions' : data_predictions_json,
+            'data_valid' : data_valid_json,
+            'data_train' : data_train_json
+        }
+        return jsonify(arr)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
+
+#sendfile
+@app.route(f"{route_prefix}/get_chart", methods=['GET'])
+def get_chart():
+    name = request.args.get('name', '')
+    return send_file(name, mimetype='image/png')
+
+#testarray
+@app.route(f"{route_prefix}/testarray", methods=['GET'])
+def testarray():
+    name = request.args.get('name', '')
+    array = {
+        'data':name,
+        'value':'0'
+
+    }
+    return jsonify(array)
 
 # Add new predict data
 @app.route(f"{route_prefix}/addPredict", methods=['GET'])
