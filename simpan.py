@@ -101,6 +101,30 @@ def trainData():
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
 # Predict function
+def run_query(self, query, params=None):
+        """Execute SQL query."""
+        try:
+            if not query or not isinstance(query, str):
+                raise Exception()
+
+            if not self.__conn:
+                self.__open_connection()
+                
+            with self.__conn.cursor() as cursor:
+                cursor.execute(query, params)
+                if 'SELECT' in query.upper():
+                    result = cursor.fetchall()
+                else:
+                    self.__conn.commit()
+                    result = f"{cursor.rowcount} row(s) affected."
+                cursor.close()
+
+                return result
+        except pymysql.MySQLError as sqle:
+            raise pymysql.MySQLError(f'Failed to execute query due to: {sqle}')
+        except Exception as e:
+            raise Exception(f'An exception occured due to: {e}')
+
 @app.route(f"{route_prefix}/predict", methods=['POST'])
 def predict():
     try:
@@ -108,12 +132,13 @@ def predict():
         data = request.json
         nm_komoditas = data.get('nm_komoditas')
         nm_pasar = data.get('nm_pasar')
-        tanggal_awal = data.get('tglAwal')
-        tanggal_akhir = data.get('tglAkhir')
+        tanggal_awal = data.get('tanggal_awal')
+        tanggal_akhir = data.get('tanggal_akhir')
 
         # Get data from database for filtering data
         query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE nm_komoditas = %s AND nm_pasar = %s AND tanggal BETWEEN %s AND %s"
-        records = db.run_query(query=query)
+        params = (nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir)
+        records = db.run_query(query=query, params=params)
         db.close_connection()
         
         # Parsing menjadi time series
@@ -262,6 +287,59 @@ def predict():
         data_json = json.dumps(predictions_dict)
 
         return data_json
+    except pymysql.MySQLError as err:
+        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
+    except Exception as e:
+        abort(HTTPStatus.BAD_REQUEST, description=str(e))
+
+@app.route(f"{route_prefix}/addPredict", methods=['GET'])
+# Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
+def addPredict(next_predict, data):
+    try:
+        # Pengambilan data
+        data = request.json
+        nm_komoditas = data.get('nm_komoditas')
+        nm_pasar = data.get('nm_pasar')
+        tanggal_awal = data.get('tanggal_awal')
+        tanggal_akhir = data.get('tanggal_akhir')
+
+        # Dataset baru harga komoditas
+        new_dataset = pd.DataFrame(data_scaled, columns=['harga_current'], data=data.index).reset_index()
+         
+        # Prepare data train         
+        new_data_train = dataset[:train_size] # Data train
+        new_data_test = dataset[train_size:] # Data test
+
+        # Pembentukan sequences data / data time series dari data test untuk model prediksi
+        new_xTest = []
+        new_yTest = new_dataset[train_size:]
+        for i in range(SEQUENCE_DATA, len(new_data_test)):
+            new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
+
+        # Convert tested x dan y sebagai numpy array
+        new_xTest, new_yTest = np.array(new_xTest), np.array(new_yTest)
+
+        # Bentuk ulang x trained data menjadi array 3 dimension
+        new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
+
+        # Melakukan prediksi pada data test baru
+        new_predictions = model.predict(new_xTest)
+        new_predictions = scaler.inverse_transform(new_predictions)
+
+        new_yTest_original = scaler.inverse_transform(new_yTest.reshape(-1, 1))
+
+        # Evaluasi model menggunakan RMSE
+        new_mse = mean_squared_error(new_yTest, new_predictions)
+        # rmse = np.sqrt(mse)
+        new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
+        akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(new_rmse)}"
+
+        # Pembuatan dataframe setelah dilakukan pelatihan model
+        new_predicted_data = pd.DataFrame(new_predictions, columns=['predictions'])
+
+        # Pembuatan variabel pembanding antara data_train, data_valid, dan data_predictions yang baru
+
+        return
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:

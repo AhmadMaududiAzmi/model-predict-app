@@ -233,31 +233,15 @@ def predict():
         # return 3
         data_valid = pd.DataFrame(yTest_original.flatten(), columns=['data_test_unscaled'], index=data.index[-len(predictions):])
         data_valid_json = data_valid.to_dict(orient='records')
-        # Reset index kolom
-        # data_predictions.reset_index(drop=True, inplace=True)
-        # data_valid.reset_index(drop=True, inplace=True)
 
         # Penggabungan data asli dengan data prediksi
         dataset = pd.concat([data_valid, data_predictions], axis=1)
         # return 4
         dataset_json = dataset.to_dict(orient='records')
 
-        # Plot data (data_train, data_valid(red: data_test), data_predict) menjadi grafik
-        # fig, ax = plt.subplots(figsize=(12, 6))
-        # ax.plot(dataset.index, dataset['data_test_unscaled'], label='Actual')
-        # ax.plot(dataset.index, dataset['predictions'], label='Predicted')
-        # ax.plot(data.index, data['harga_current'], label='Train Data', linestyle='dashed', alpha=0.5)
-        # ax.set_title('Actual vs. Predicted Prices\nRMSE: ' + str(rmse))
-        # ax.set_xlabel('Years')
-        # ax.set_ylabel('Prices')
-        # ax.legend()
-
         # Simpan gambar pada direktori sebagai PNG
         # return 5
         plot_filename = generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir)
-        # plt.savefig(plot_filename, format='png')
-        # plt.close()
-        #grap = plotGrap(dataset, plot_filename, data)
         thread = threading.Thread(target=plotGrap,args=(dataset, plot_filename, data))
         thread.start()
         arr = {
@@ -292,47 +276,56 @@ def testarray():
 # Add new predict data
 @app.route(f"{route_prefix}/addPredict", methods=['GET'])
 # Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
-def addPredict(next_predict = 30):
+def addPredict(next_predict, data):
     try:
-        # Pengambilan variabel dengan global pada def predict()
+        # Load model LSTM
+        model = load_model('training_model')
 
-        # Dataset baru harga komoditas
-        new_dataset = pd.DataFrame(data_scaled, columns=['harga_current'], data=data.index).reset_index()
-         
-        # Prepare data train         
-        new_data_train = dataset[:train_size] # Data train
-        new_data_test = dataset[train_size:] # Data test
+        # Get data terakhir dari data
+        last_date_data = data.index(-1)
+        last_value_data = data['harga_current'][-1]
 
-        # Pembentukan sequences data / data time series dari data test untuk model prediksi
-        new_xTest = []
-        new_yTest = new_dataset[train_size:]
-        for i in range(SEQUENCE_DATA, len(new_data_test)):
-            new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
+        # Data baru untuk prediksi masa mendatang
+        new_data = []
+        for i in range(next_predict):
+            new_data.append(last_value_data)
+            last_value_data = model.predict(new_data[-SEQUENCE_DATA:].reshape(1, SEQUENCE_DATA, 1))
+            new_data.append(last_value_data[0][0])
 
-        # Convert tested x dan y sebagai numpy array
-        new_xTest, new_yTest = np.array(new_xTest), np.array(new_yTest)
+        new_data = np.array(new_data).reshape(-1, 1)
+        new_data_scaled = scaler.transform(new_data)
 
-        # Bentuk ulang x trained data menjadi array 3 dimension
-        new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
+        xNew = []
+        for i in range(SEQUENCE_DATA, len(new_data_scaled)):
+            xNew.append(new_data_scaled[i-SEQUENCE_DATA:i, 0])
+        
+        xNew = np.array(xNew)
+        xNew_3d = np.reshape(xNew, (xNew.shape[0], SEQUENCE_DATA, 1))
 
-        # Melakukan prediksi pada data test baru
-        new_predictions = model.predict(new_xTest)
-        new_predictions = scaler.inverse_transform(new_predictions)
+        # Melakukan prediksi pada data tambahan
+        predictions_new = model.predict(xNew_3d)
+        predictions_new = scaler.inverse_transform(predictions_new)
 
-        new_yTest_original = scaler.inverse_transform(new_yTest.reshape(-1, 1))
+        # Membuat indeks tanggal baru untuk data tambahan
+        date_range = pd.date_range(start=last_data_date + pd.DateOffset(days=1), periods=len(predictions_new))
 
-        # Evaluasi model menggunakan RMSE
-        new_mse = mean_squared_error(new_yTest, new_predictions)
-        # rmse = np.sqrt(mse)
-        new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
-        akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(new_rmse)}"
+        # Membuat DataFrame untuk data tambahan
+        data_new = pd.DataFrame(predictions_new, columns=['predictions'], index=date_range)
 
-        # Pembuatan dataframe setelah dilakukan pelatihan model
-        new_predicted_data = pd.DataFrame(new_predictions, columns=['predictions'])
+        # Menggabungkan data tambahan dengan data asli
+        combined_data = pd.concat([data, data_new])
 
-        # Pembuatan variabel pembanding antara data_train, data_valid, dan data_predictions yang baru
+        # Simpan gambar pada direktori sebagai PNG
+        plot_filename_new = generate_plot_filename(nm_komoditas, nm_pasar, last_data_date, date_range[-1])
+        thread_new = threading.Thread(target=plotGrap, args=(combined_data, plot_filename_new, data))
+        thread_new.start()
 
-        return
+        arr_new = {
+            'filename': plot_filename_new,
+            'data_combined': combined_data.to_dict(orient='records')
+        }
+
+        return jsonify(arr_new)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
