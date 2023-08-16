@@ -50,6 +50,7 @@ db = Database(devconf)
 # ==============================================[ Function - Start ]
 # Plot Graph (3 parameter; data_train, data_valid, data_prediction)
 def plotGrap(dataset, plot_filename, data):
+    plt.switch_backend('agg')
     plt.figure(figsize=(12, 6))
     plt.plot(dataset.index, dataset['data_test_unscaled'], label='Actual Prices')
     plt.plot(dataset.index, dataset['predictions'], label='Predicted Prices')
@@ -129,16 +130,18 @@ def trainData():
 @app.route(f"{route_prefix}/predict", methods=['GET'])
 def predict():
     try:
-        query = "SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2016-03-30' AND komoditas_id = 8 AND pasar_id = 1 GROUP BY tanggal"
-        records = db.run_query(query=query)
-        db.close_connection()
+        
 
         # Get data from input user
-        nm_komoditas = 'Bawang Merah'
-        nm_pasar = 'Pasar Wlingi'
-        tanggal_awal = '2016-01-01'
-        tanggal_akhir = '2020-31-12'
+        nm_komoditas = request.args.get('komoditas_id', '')
+        nm_pasar = request.args.get('pasar_id', '')
+        tanggal_awal = request.args.get('start_date', '')
+        tanggal_akhir = request.args.get('end_date', '')
 
+        query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
+        records = db.run_query(query=query)
+        db.close_connection()
+        #return jsonify(records)
         # Get data dan parsing menjadi time series
         data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
         dateParse = lambda x: pd.to_datetime(x)
@@ -271,7 +274,7 @@ def predict():
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
-
+    # root.mainloop()
 #sendfile
 @app.route(f"{route_prefix}/get_chart", methods=['GET'])
 def get_chart():
