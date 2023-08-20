@@ -48,8 +48,9 @@ db = Database(devconf)
 
 # =================================================[ Routes - End ]
 # Variabel-variabel
-SEQUENCE_DATA = 30
+SEQUENCE_DATA = 60
 NEXT_PREDICTION = 30
+PERCENTAGE = 0.8
 
 # Plot grafik hasil prediksi
 @app.route(f"{route_prefix}/plot", methods=['GET'])
@@ -172,46 +173,72 @@ def plot():
 # Add new predict data
 @app.route(f"{route_prefix}/addPredict", methods=['GET'])
 # Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
-def addPredict(next_predict = 30):
+def addPredict(data, nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
     try:
-        # Pengambilan variabel dengan global pada def predict()
+        # get last date data for creating new dataset
+        new_tanggal_akhir = tanggal_akhir + NEXT_PREDICTION
+        new_tanggal_akhir = pd.to_datetime()
 
-        # Dataset baru harga komoditas
-        new_dataset = pd.DataFrame(data_scaled, columns=['harga_current'], data=data.index).reset_index()
-         
-        # Prepare data train         
-        new_data_train = dataset[:train_size] # Data train
-        new_data_test = dataset[train_size:] # Data test
+        # New query for getting new dataset
+        query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{new_tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
+        records = db.run_query(query=query)
+        db.close_connection()
 
-        # Pembentukan sequences data / data time series dari data test untuk model prediksi
+        # Create new dataset
+        new_data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
+        dateParse = lambda x: pd.to_datetime(x)
+        new_data['tanggal'] = new_data['tanggal'].apply(dateParse)
+        new_data = new_data.sort_values('tanggal')
+        new_data.set_index('tanggal', inplace=True)
+
+        # Preprocessing data
+        # Perhitungan rata-rata untuk mengisi data harga_current = 0
+        avg_harga_current = new_data['harga_current'].mean()
+        new_data['harga_current'] = new_data['harga_current'].replace(0, avg_harga_current)
+        # Normalisasi data
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        new_data_scaled = scaler.fit_transform(new_data[['harga_current']])
+        data_json = json.dumps(new_data_scaled.tolist())
+
+        # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
+        train_size = int(len(new_data_scaled) * PERCENTAGE)
+
+        # Create new data_test
+        new_data_test = new_data_scaled[train_size - SEQUENCE_DATA:]
+
+        # Create new sequence data_test for new dataset
         new_xTest = []
-        new_yTest = new_dataset[train_size:]
+        new_yTest = new_data_scaled[train_size:]
         for i in range(SEQUENCE_DATA, len(new_data_test)):
             new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
+        
+        # Convert x and y to numpy
+        new_xTest = np.array(new_xTest)
 
-        # Convert tested x dan y sebagai numpy array
-        new_xTest, new_yTest = np.array(new_xTest), np.array(new_yTest)
-
-        # Bentuk ulang x trained data menjadi array 3 dimension
+        # Convert to array 3 dimension
         new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
 
-        # Melakukan prediksi pada data test baru
+        # Load model prediction
+        model = load_model('trained_model.h5')
+
+        # Make new predict for future
         new_predictions = model.predict(new_xTest)
+
+        # Transform to real values
         new_predictions = scaler.inverse_transform(new_predictions)
 
-        new_yTest_original = scaler.inverse_transform(new_yTest.reshape(-1, 1))
-
-        # Evaluasi model menggunakan RMSE
-        new_mse = mean_squared_error(new_yTest, new_predictions)
-        # rmse = np.sqrt(mse)
+        # RMSE
         new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
-        akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(new_rmse)}"
+        print('Root mean square (RMSE) - New:' + str(new_rmse))
+        akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(new_rmse)
 
-        # Pembuatan dataframe setelah dilakukan pelatihan model
-        new_predicted_data = pd.DataFrame(new_predictions, columns=['predictions'])
+        # Create new dataframe for new_data_predictions, new_data_valid, new_data_train
+        new_data_train = new_data.loc[train_size:]
+        new_data_valid = new_data.loc[:train_size]
+        new_data_predictions = pd.DataFrame(new_predictions, columns=['new_predictions'], index=new_data.index[-len(new_predictions):])
 
-        # Pembuatan variabel pembanding antara data_train, data_valid, dan data_predictions yang baru
-
+        # Concat
+        new_dataset = pd.concat([new_data_valid, new_data_predictions], axis=1)
         return
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))

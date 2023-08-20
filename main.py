@@ -9,7 +9,7 @@ import joblib
 
 from http import HTTPStatus
 from flask_cors import CORS
-from flask import Flask, redirect, jsonify, json, url_for, abort, request, send_file
+from flask import Flask, jsonify, json, abort, request, send_file, g
 from db import Database
 from config import DevelopmentConfig as devconf
 
@@ -75,7 +75,7 @@ def generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
 @app.route(f"{route_prefix}/traindata", methods=["GET", "POST"])
 def trainData():
     try:
-        query = "SELECT * FROM pertanian.harga_komoditas WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo'"
+        query = "SELECT * FROM daftar_harga WHERE nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo'"
         records = db.run_query(query=query)
         db.close_connection()
 
@@ -130,14 +130,13 @@ def trainData():
 @app.route(f"{route_prefix}/predict", methods=['GET'])
 def predict():
     try:
-        
-
         # Get data from input user
         nm_komoditas = request.args.get('komoditas_id', '')
         nm_pasar = request.args.get('pasar_id', '')
         tanggal_awal = request.args.get('start_date', '')
         tanggal_akhir = request.args.get('end_date', '')
 
+        # Get column for processing model
         query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
@@ -166,9 +165,8 @@ def predict():
         train_size = int(len(data_scaled) * PERCENTAGE)
         
         # Prepare data train
-        # return 1
         data_train = data_scaled[:train_size]
-        data_train_json = data_train.tolist()
+        # data_train_json = data_train.tolist()
         jumlah_data_train = f"Jumlah data = {data_train.shape}"
 
         # Pembentukan sequences data / data time series dari data train untuk model prediksi
@@ -199,11 +197,17 @@ def predict():
         # Train data
         model.fit(xTrain_3d, yTrain, epochs=100, batch_size=32)
 
+        # Simpan model
+        model.save('trained_model.h5')
+
+        # Mengembalikan values data train ke bentuk asal sebelum dinormalisasi
+        yTrain_original = scaler.inverse_transform(yTrain.reshape(-1, 1))
+
         # Prepare data test
         data_test = data_scaled[train_size - SEQUENCE_DATA:]
         jumlah_data_test = f"Jumlah data = {data_test.shape}"
 
-        # Pembentukan sequences data / data time series dari data test untuk model prediksi        
+        # Pembentukan sequences data / data time series dari data test untuk model prediksi
         xTest = []
         yTest = data_scaled[train_size:]
         for i in range(SEQUENCE_DATA, len(data_test)):
@@ -221,7 +225,7 @@ def predict():
         # Mengembalikan values data ke bentuk asal sebelum dinormalisasi
         predictions = scaler.inverse_transform(predictions) 
 
-        # Mengembalikan values data test ke bentuk asal sebelum normalisasi
+        # Mengembalikan values data test dan data train ke bentuk asal sebelum normalisasi
         yTest_original = scaler.inverse_transform(yTest.reshape(-1, 1))
 
         # Evaluasi model menggunakan RMSE
@@ -230,6 +234,8 @@ def predict():
         akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(rmse)
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
+        # return 1
+        data_train_json = data_train.tolist()
         # return 2
         data_predictions = pd.DataFrame(predictions.flatten(), columns=['predictions'], index=data.index[-len(predictions):])
         data_predictions_json = data_predictions.to_dict(orient='records')
@@ -239,7 +245,6 @@ def predict():
 
         # Penggabungan data asli dengan data prediksi
         dataset = pd.concat([data_valid, data_predictions], axis=1)
-        # return 4
         dataset_json = dataset.to_dict(orient='records')
 
         # Simpan gambar pada direktori sebagai PNG
@@ -279,14 +284,21 @@ def testarray():
 # Add new predict data
 @app.route(f"{route_prefix}/addPredict", methods=['GET'])
 # Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
-def addPredict(next_predict, data):
+def addPredict():
+    global data
+
     try:
         # Load model LSTM
-        model = load_model('training_model')
+        model = load_model('trained_model.h5')
 
         # Get data terakhir dari data
         last_date_data = data.index(-1)
         last_value_data = data['harga_current'][-1]
+
+        # Filter data
+        new_query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
+        record = db.run_query(query=new_query)
+        db.close_connection()
 
         # Data baru untuk prediksi masa mendatang
         new_data = []
