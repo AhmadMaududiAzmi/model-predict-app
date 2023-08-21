@@ -285,8 +285,6 @@ def testarray():
 @app.route(f"{route_prefix}/addPredict", methods=['GET'])
 # Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
 def addPredict():
-    global data
-
     try:
         # Load model LSTM
         model = load_model('trained_model.h5')
