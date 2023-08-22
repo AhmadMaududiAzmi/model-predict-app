@@ -72,6 +72,7 @@ def generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
 
 # ==============================================[ Routes - Start ]
 # Melakukan train model dengan menggunakan data train
+SEQUENCE_DATA = 60
 @app.route(f"{route_prefix}/traindata", methods=["GET", "POST"])
 def trainData():
     try:
@@ -130,35 +131,33 @@ def trainData():
 @app.route(f"{route_prefix}/predict", methods=['GET'])
 def predict():
     try:
-        # Get data from input user
+
         nm_komoditas = request.args.get('komoditas_id', '')
         nm_pasar = request.args.get('pasar_id', '')
         tanggal_awal = request.args.get('start_date', '')
         tanggal_akhir = request.args.get('end_date', '')
-
-        # Get column for processing model
+        
+        #query = "SELECT tanggal, harga_current FROM pertanian_lama.harga_komoditas WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo' GROUP BY tanggal"
         query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
-        #return jsonify(records)
+
         # Get data dan parsing menjadi time series
         data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
-        dateParse = lambda x: pd.to_datetime(x)
-        data['tanggal'] = data['tanggal'].apply(dateParse)
-        data = data.sort_values('tanggal')
+        data['tanggal'] = pd.to_datetime(data['tanggal'])
+        # data = data.sort_values('tanggal')
         data.set_index('tanggal', inplace=True)
+        # dataframe_json = data.to_json(orient='records')
 
         # Preprocessing data
         # Perhitungan rata-rata untuk mengisi data harga_current = 0
         avg_harga_current = data['harga_current'].mean()
         data['harga_current'] = data['harga_current'].replace(0, avg_harga_current)
-        # Normalisasi data
+        dataframe_json = data.reset_index().to_json(orient='records')
+        # # Normalisasi data
         scaler = MinMaxScaler(feature_range=(0, 1))
         data_scaled = scaler.fit_transform(data[['harga_current']])
         data_json = json.dumps(data_scaled.tolist())
-
-        # Data harga yang sudah diolah
-        # dataset = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
 
         # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
         PERCENTAGE = 0.8 # Persentase data train adalah 0.8 (80%) untuk saat ini
@@ -166,11 +165,9 @@ def predict():
         
         # Prepare data train
         data_train = data_scaled[:train_size]
-        # data_train_json = data_train.tolist()
         jumlah_data_train = f"Jumlah data = {data_train.shape}"
 
-        # Pembentukan sequences data / data time series dari data train untuk model prediksi
-        SEQUENCE_DATA = 30 # Menggunakan 30 data sebagai inputan model LSTM. Sehingga tidak keseluruhan data train menjadi 1 inputan ke dalam model LSTM
+        # # Pembentukan sequences data / data time series dari data train untuk model prediksi
         xTrain = []
         yTrain = []
         for i in range(SEQUENCE_DATA, len(data_train)):
@@ -197,17 +194,11 @@ def predict():
         # Train data
         model.fit(xTrain_3d, yTrain, epochs=100, batch_size=32)
 
-        # Simpan model
-        model.save('trained_model.h5')
-
-        # Mengembalikan values data train ke bentuk asal sebelum dinormalisasi
-        yTrain_original = scaler.inverse_transform(yTrain.reshape(-1, 1))
-
         # Prepare data test
         data_test = data_scaled[train_size - SEQUENCE_DATA:]
         jumlah_data_test = f"Jumlah data = {data_test.shape}"
 
-        # Pembentukan sequences data / data time series dari data test untuk model prediksi
+        # Pembentukan sequences data / data time series dari data test untuk model prediksi        
         xTest = []
         yTest = data_scaled[train_size:]
         for i in range(SEQUENCE_DATA, len(data_test)):
@@ -225,38 +216,39 @@ def predict():
         # Mengembalikan values data ke bentuk asal sebelum dinormalisasi
         predictions = scaler.inverse_transform(predictions) 
 
-        # Mengembalikan values data test dan data train ke bentuk asal sebelum normalisasi
+        # Mengembalikan nilai asli data test sebelum dinormalisasi (red: data_valid)
         yTest_original = scaler.inverse_transform(yTest.reshape(-1, 1))
 
         # Evaluasi model menggunakan RMSE
         mse = mean_squared_error(yTest, predictions)
-        rmse = np.sqrt(mse)
-        akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(rmse)
+        # rmse = np.sqrt(mse)
+        rmse = np.sqrt(np.mean(predictions - yTest) ** 2)
+        akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(rmse)}"
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
-        # return 1
-        data_train_json = data_train.tolist()
-        # return 2
-        data_predictions = pd.DataFrame(predictions.flatten(), columns=['predictions'], index=data.index[-len(predictions):])
-        data_predictions_json = data_predictions.to_dict(orient='records')
-        # return 3
-        data_valid = pd.DataFrame(yTest_original.flatten(), columns=['data_test_unscaled'], index=data.index[-len(predictions):])
-        data_valid_json = data_valid.to_dict(orient='records')
+        predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[-len(predictions):])
+        
+        # Plot hasil prediksi dan data asli
+        plt.switch_backend('agg')
+        fig, ax = plt.subplots(figsize=(12, 6))
+        ax.plot(predicted_data.index, predicted_data['Actual'], label='Actual')
+        ax.plot(predicted_data.index, predicted_data['Predicted'], label='Predicted')
+        ax.plot(data.index, data['harga_current'], label='Train Data', linestyle='dashed', alpha=0.5)
+        ax.set_title('Hasil Prediksi vs. Data Asli\nRMSE: ' + str(rmse))
+        ax.set_xlabel('Tanggal')
+        ax.set_ylabel('Harga')
+        ax.legend()
 
-        # Penggabungan data asli dengan data prediksi
-        dataset = pd.concat([data_valid, data_predictions], axis=1)
-        dataset_json = dataset.to_dict(orient='records')
-
-        # Simpan gambar pada direktori sebagai PNG
-        # return 5
+        # Simpan gambar sebagai file PNG
         plot_filename = generate_plot_filename(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir)
-        thread = threading.Thread(target=plotGrap,args=(dataset, plot_filename, data))
-        thread.start()
+        plt.savefig(plot_filename, format='png')
+        plt.close()
+
+        # Mengirimkan gambar ke browser
+        #return send_file(plot_filename, mimetype='image/png')
+
         arr = {
-            'filename' : plot_filename,
-            'data_predictions' : data_predictions_json,
-            'data_valid' : data_valid_json,
-            'data_train' : data_train_json
+            'filename' : plot_filename
         }
         return jsonify(arr)
     except pymysql.MySQLError as err:
