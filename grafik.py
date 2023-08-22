@@ -15,7 +15,7 @@ from config import DevelopmentConfig as devconf
 
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 import tensorflow as tf
 from keras.models import Sequential, load_model
@@ -48,7 +48,7 @@ db = Database(devconf)
 
 # =================================================[ Routes - End ]
 # Variabel-variabel
-SEQUENCE_DATA = 60
+SEQUENCE_DATA = 30
 NEXT_PREDICTION = 30
 PERCENTAGE = 0.8
 
@@ -56,8 +56,8 @@ PERCENTAGE = 0.8
 @app.route(f"{route_prefix}/plot", methods=['GET'])
 def plot():
     try:
-        # query = "SELECT tanggal, harga_current FROM pertanian_lama.harga_komoditas WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo' GROUP BY tanggal"
-        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND komoditas_id = '9' AND pasar_id = '100' GROUP BY tanggal"
+        # query = "SELECT tanggal, harga_current FROM pertanian_lama.harga_komoditas WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'BAWANG MERAH' AND nm_pasar = 'Pasar Tawangmangu' GROUP BY tanggal"
+        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2019-01-01' AND tanggal <= '2020-12-31' AND komoditas_id = '8' AND pasar_id = '102' GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
 
@@ -142,9 +142,15 @@ def plot():
         yTest_original = scaler.inverse_transform(yTest.reshape(-1, 1))
 
         # Evaluasi model menggunakan RMSE
-        mse = mean_squared_error(yTest, predictions)
+        def calculate_akurasi(predicted, actual):
+            n = len(predicted)
+            mse = np.sum((predicted - actual)**2) / n
+            rmse = np.sqrt(mse)
+            return rmse
+        # mse = calculate_akurasi(predictions, yTest_original)
+        rmse = calculate_akurasi(predictions, yTest_original)
+        # mse = mean_squared_error(yTest_original, predictions)
         # rmse = np.sqrt(mse)
-        rmse = np.sqrt(np.mean(predictions - yTest) ** 2)
         akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(rmse)}"
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
