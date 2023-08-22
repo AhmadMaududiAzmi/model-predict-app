@@ -78,9 +78,6 @@ def plot():
         data_scaled = scaler.fit_transform(data[['harga_current']])
         data_json = json.dumps(data_scaled.tolist())
 
-        # Dataframe harga yang sudah diolah
-        # dataset = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
-
         # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
         PERCENTAGE = 0.8 # Persentase data train adalah 0.8 (80%) untuk saat ini
         train_size = int(len(data_scaled) * PERCENTAGE)
@@ -157,6 +154,7 @@ def plot():
         predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[-len(predictions):])
         
         # Plot hasil prediksi dan data asli
+        plt.switch_backend('agg')
         fig, ax = plt.subplots(figsize=(12, 6))
         ax.plot(predicted_data.index, predicted_data['Actual'], label='Actual')
         ax.plot(predicted_data.index, predicted_data['Predicted'], label='Predicted')
