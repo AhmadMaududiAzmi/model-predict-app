@@ -56,28 +56,30 @@ PERCENTAGE = 0.8
 @app.route(f"{route_prefix}/plot", methods=['GET'])
 def plot():
     try:
-        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'Bawang Merah' AND nm_pasar = 'Pasar Wlingi' GROUP BY tanggal"
+        # query = "SELECT tanggal, harga_current FROM pertanian_lama.harga_komoditas WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'BAWANG PUTIH' AND nm_pasar = 'Pasar Dinoyo' GROUP BY tanggal"
+        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND komoditas_id = '9' AND pasar_id = '100' GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
 
         # Get data dan parsing menjadi time series
         data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
-        dateParse = lambda x: pd.to_datetime(x)
-        data['tanggal'] = data['tanggal'].apply(dateParse)
-        data = data.sort_values('tanggal')
+        data['tanggal'] = pd.to_datetime(data['tanggal'])
+        # data = data.sort_values('tanggal')
         data.set_index('tanggal', inplace=True)
+        # dataframe_json = data.to_json(orient='records')
 
         # Preprocessing data
         # Perhitungan rata-rata untuk mengisi data harga_current = 0
         avg_harga_current = data['harga_current'].mean()
         data['harga_current'] = data['harga_current'].replace(0, avg_harga_current)
-        # Normalisasi data
+        dataframe_json = data.reset_index().to_json(orient='records')
+        # # Normalisasi data
         scaler = MinMaxScaler(feature_range=(0, 1))
         data_scaled = scaler.fit_transform(data[['harga_current']])
         data_json = json.dumps(data_scaled.tolist())
 
         # Dataframe harga yang sudah diolah
-        dataset = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
+        # dataset = pd.DataFrame(data_scaled, columns=['harga_current'], index=data.index).reset_index()
 
         # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
         PERCENTAGE = 0.8 # Persentase data train adalah 0.8 (80%) untuk saat ini
@@ -171,79 +173,79 @@ def plot():
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
 # Add new predict data
-@app.route(f"{route_prefix}/addPredict", methods=['GET'])
-# Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
-def addPredict(data, nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
-    try:
-        # get last date data for creating new dataset
-        new_tanggal_akhir = tanggal_akhir + NEXT_PREDICTION
-        new_tanggal_akhir = pd.to_datetime()
+# @app.route(f"{route_prefix}/addPredict", methods=['GET'])
+# # Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
+# def addPredict(data, nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
+#     try:
+#         # get last date data for creating new dataset
+#         new_tanggal_akhir = tanggal_akhir + NEXT_PREDICTION
+#         new_tanggal_akhir = pd.to_datetime()
 
-        # New query for getting new dataset
-        query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{new_tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
-        records = db.run_query(query=query)
-        db.close_connection()
+#         # New query for getting new dataset
+#         query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{new_tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
+#         records = db.run_query(query=query)
+#         db.close_connection()
 
-        # Create new dataset
-        new_data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
-        dateParse = lambda x: pd.to_datetime(x)
-        new_data['tanggal'] = new_data['tanggal'].apply(dateParse)
-        new_data = new_data.sort_values('tanggal')
-        new_data.set_index('tanggal', inplace=True)
+#         # Create new dataset
+#         new_data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
+#         dateParse = lambda x: pd.to_datetime(x)
+#         new_data['tanggal'] = new_data['tanggal'].apply(dateParse)
+#         new_data = new_data.sort_values('tanggal')
+#         new_data.set_index('tanggal', inplace=True)
 
-        # Preprocessing data
-        # Perhitungan rata-rata untuk mengisi data harga_current = 0
-        avg_harga_current = new_data['harga_current'].mean()
-        new_data['harga_current'] = new_data['harga_current'].replace(0, avg_harga_current)
-        # Normalisasi data
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        new_data_scaled = scaler.fit_transform(new_data[['harga_current']])
-        data_json = json.dumps(new_data_scaled.tolist())
+#         # Preprocessing data
+#         # Perhitungan rata-rata untuk mengisi data harga_current = 0
+#         avg_harga_current = new_data['harga_current'].mean()
+#         new_data['harga_current'] = new_data['harga_current'].replace(0, avg_harga_current)
+#         # Normalisasi data
+#         scaler = MinMaxScaler(feature_range=(0, 1))
+#         new_data_scaled = scaler.fit_transform(new_data[['harga_current']])
+#         data_json = json.dumps(new_data_scaled.tolist())
 
-        # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
-        train_size = int(len(new_data_scaled) * PERCENTAGE)
+#         # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
+#         train_size = int(len(new_data_scaled) * PERCENTAGE)
 
-        # Create new data_test
-        new_data_test = new_data_scaled[train_size - SEQUENCE_DATA:]
+#         # Create new data_test
+#         new_data_test = new_data_scaled[train_size - SEQUENCE_DATA:]
 
-        # Create new sequence data_test for new dataset
-        new_xTest = []
-        new_yTest = new_data_scaled[train_size:]
-        for i in range(SEQUENCE_DATA, len(new_data_test)):
-            new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
+#         # Create new sequence data_test for new dataset
+#         new_xTest = []
+#         new_yTest = new_data_scaled[train_size:]
+#         for i in range(SEQUENCE_DATA, len(new_data_test)):
+#             new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
         
-        # Convert x and y to numpy
-        new_xTest = np.array(new_xTest)
+#         # Convert x and y to numpy
+#         new_xTest = np.array(new_xTest)
 
-        # Convert to array 3 dimension
-        new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
+#         # Convert to array 3 dimension
+#         new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
 
-        # Load model prediction
-        model = load_model('trained_model.h5')
+#         # Load model prediction
+#         model = load_model('trained_model.h5')
 
-        # Make new predict for future
-        new_predictions = model.predict(new_xTest)
+#         # Make new predict for future
+#         new_predictions = model.predict(new_xTest)
 
-        # Transform to real values
-        new_predictions = scaler.inverse_transform(new_predictions)
+#         # Transform to real values
+#         new_predictions = scaler.inverse_transform(new_predictions)
 
-        # RMSE
-        new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
-        print('Root mean square (RMSE) - New:' + str(new_rmse))
-        akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(new_rmse)
+#         # RMSE
+#         new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
+#         print('Root mean square (RMSE) - New:' + str(new_rmse))
+#         akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(new_rmse)
 
-        # Create new dataframe for new_data_predictions, new_data_valid, new_data_train
-        new_data_train = new_data.loc[train_size:]
-        new_data_valid = new_data.loc[:train_size]
-        new_data_predictions = pd.DataFrame(new_predictions, columns=['new_predictions'], index=new_data.index[-len(new_predictions):])
+#         # Create new dataframe for new_data_predictions, new_data_valid, new_data_train
+#         new_data_train = new_data.loc[train_size:]
+#         new_data_valid = new_data.loc[:train_size]
+#         new_data_predictions = pd.DataFrame(new_predictions, columns=['new_predictions'], index=new_data.index[-len(new_predictions):])
 
-        # Concat
-        new_dataset = pd.concat([new_data_valid, new_data_predictions], axis=1)
-        return
-    except pymysql.MySQLError as err:
-        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
-    except Exception as e:
-        abort(HTTPStatus.BAD_REQUEST, description=str(e))
+#         # Concat
+#         new_dataset = pd.concat([new_data_valid, new_data_predictions], axis=1)
+#         return
+#     except pymysql.MySQLError as err:
+#         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
+#     except Exception as e:
+#         abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
 # =================================================[ Routes - End ]
 
