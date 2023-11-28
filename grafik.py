@@ -18,7 +18,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 import tensorflow as tf
-from keras.models import Sequential, load_model
+from keras.models import Sequential
 from keras.layers import Dense, LSTM
 
 host = os.environ.get('FLASK_SERVER_HOST', devconf.HOST)
@@ -46,18 +46,24 @@ app = create_app()
 wsgi_app = app.wsgi_app
 db = Database(devconf)
 
-# =================================================[ Routes - End ]
+# =================================================[ Function ]
+def generate_filename(tanggal_awal, tanggal_akhir, nm_komoditas, nm_pasar):
+    filename = f"trained_model_{tanggal_awal}_{tanggal_akhir}_{nm_komoditas}_{nm_pasar}.h5"
+    return filename
+# =================================================[ Function - End ]
+
+# =================================================[ Routes ]
 # Variabel-variabel
 SEQUENCE_DATA = 30
 NEXT_PREDICTION = 30
 PERCENTAGE = 0.8
 
 # Plot grafik hasil prediksi
-@app.route(f"{route_prefix}/plot", methods=['GET'])
+@app.route(f"{route_prefix}/train", methods=['GET'])
 def plot():
     try:
         # query = "SELECT tanggal, harga_current FROM pertanian_lama.harga_komoditas WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND nm_komoditas = 'BAWANG MERAH' AND nm_pasar = 'Pasar Tawangmangu' GROUP BY tanggal"
-        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2019-01-01' AND tanggal <= '2020-12-31' AND komoditas_id = '8' AND pasar_id = '102' GROUP BY tanggal"
+        query = "SELECT tanggal, harga_current FROM pertanian.daftar_harga WHERE tanggal >= '2016-01-01' AND tanggal <= '2020-12-31' AND komoditas_id = '8' AND pasar_id = '8' GROUP BY tanggal"
         records = db.run_query(query=query)
         db.close_connection()
 
@@ -103,8 +109,9 @@ def plot():
 
         # Model LSTM
         model = Sequential()
-        model.add(LSTM(64, return_sequences=True, input_shape=(xTrain_3d.shape[1], 1)))
-        model.add(LSTM(64, return_sequences=False))
+        model.add(LSTM(50, input_shape=(xTrain_3d.shape[1], 1)))
+        # model.add(LSTM(64, return_sequences=True, input_shape=(xTrain_3d.shape[1], 1)))
+        # model.add(LSTM(50, return_sequences=False))
         model.add(Dense(25))
         model.add(Dense(1))
         optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
@@ -144,112 +151,115 @@ def plot():
             mse = np.sum((predicted - actual)**2) / n
             rmse = np.sqrt(mse)
             return rmse
-        # mse = calculate_akurasi(predictions, yTest_original)
         rmse = calculate_akurasi(predictions, yTest_original)
+        # mse = calculate_akurasi(predictions, yTest_original)
         # mse = mean_squared_error(yTest_original, predictions)
         # rmse = np.sqrt(mse)
         akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(rmse)}"
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
         predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[-len(predictions):])
-        
-        # Plot hasil prediksi dan data asli
-        plt.switch_backend('agg')
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(predicted_data.index, predicted_data['Actual'], label='Actual')
-        ax.plot(predicted_data.index, predicted_data['Predicted'], label='Predicted')
-        ax.plot(data.index, data['harga_current'], label='Train Data', linestyle='dashed', alpha=0.5)
-        ax.set_title('Hasil Prediksi vs. Data Asli\nRMSE: ' + str(rmse))
-        ax.set_xlabel('Tanggal')
-        ax.set_ylabel('Harga')
-        ax.legend()
 
-        # Simpan gambar sebagai file PNG
-        plot_filename = 'plot.png'
-        plt.savefig(plot_filename, format='png')
-        plt.close()
+        # Save data to database
+        for timestamp, value in predicted_data['Predicted'].items():
+            query = "INSERT INTO trained_data (timestamp, value) VALUES (%s, %s)"
+            records = db.run_query(query=query)
+            db.close_connection()
 
-        # Mengirimkan gambar ke browser
-        return send_file(plot_filename, mimetype='image/png')
+        return predicted_data.to_json()
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
+
+# Save trained model
+@app.route(f"{route_prefix}/saveModel")
+def save_model():
+    return
+
+# Get trained model from Laravel
+@app.route(f"{route_prefix}/getModel", methods=['POST'])
+def get_trained_model():
+    model_file = request.file['model']
+    model_file.save('trained_model.h5')
+    load_model = joblib.load('trained_model.h5')
+    return load_model
+
 # Add new predict data
-# @app.route(f"{route_prefix}/addPredict", methods=['GET'])
-# # Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
-# def addPredict(data, nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
-#     try:
-#         # get last date data for creating new dataset
-#         new_tanggal_akhir = tanggal_akhir + NEXT_PREDICTION
-#         new_tanggal_akhir = pd.to_datetime()
+@app.route(f"{route_prefix}/addPredict", methods=['GET'])
+# Penggunaan parameter untuk menambahkan variabel data baru yang berupa hasil prediksi masa mendatang
+def addPredict(data, nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir):
+    try:
+        # get last date data for creating new dataset
+        new_tanggal_akhir = tanggal_akhir + NEXT_PREDICTION
+        new_tanggal_akhir = pd.to_datetime()
 
-#         # New query for getting new dataset
-#         query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{new_tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
-#         records = db.run_query(query=query)
-#         db.close_connection()
+        # New query for getting new dataset
+        query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{new_tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}' GROUP BY tanggal"
+        records = db.run_query(query=query)
+        db.close_connection()
 
-#         # Create new dataset
-#         new_data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
-#         dateParse = lambda x: pd.to_datetime(x)
-#         new_data['tanggal'] = new_data['tanggal'].apply(dateParse)
-#         new_data = new_data.sort_values('tanggal')
-#         new_data.set_index('tanggal', inplace=True)
+        # Create new dataset
+        new_data = pd.DataFrame(records, columns=['tanggal', 'harga_current'])
+        dateParse = lambda x: pd.to_datetime(x)
+        new_data['tanggal'] = new_data['tanggal'].apply(dateParse)
+        new_data = new_data.sort_values('tanggal')
+        new_data.set_index('tanggal', inplace=True)
 
-#         # Preprocessing data
-#         # Perhitungan rata-rata untuk mengisi data harga_current = 0
-#         avg_harga_current = new_data['harga_current'].mean()
-#         new_data['harga_current'] = new_data['harga_current'].replace(0, avg_harga_current)
-#         # Normalisasi data
-#         scaler = MinMaxScaler(feature_range=(0, 1))
-#         new_data_scaled = scaler.fit_transform(new_data[['harga_current']])
-#         data_json = json.dumps(new_data_scaled.tolist())
+        # Preprocessing data
+        # Perhitungan rata-rata untuk mengisi data harga_current = 0
+        avg_harga_current = new_data['harga_current'].mean()
+        new_data['harga_current'] = new_data['harga_current'].replace(0, avg_harga_current)
+        # Normalisasi data
+        scaler = MinMaxScaler(feature_range=(0, 1))
+        new_data_scaled = scaler.fit_transform(new_data[['harga_current']])
+        data_json = json.dumps(new_data_scaled.tolist())
 
-#         # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
-#         train_size = int(len(new_data_scaled) * PERCENTAGE)
+        # Pembagian data dengan membuat rumus len of percentage (data train dan data test)
+        train_size = int(len(new_data_scaled) * PERCENTAGE)
 
-#         # Create new data_test
-#         new_data_test = new_data_scaled[train_size - SEQUENCE_DATA:]
+        # Create new data_test
+        new_data_test = new_data_scaled[train_size - SEQUENCE_DATA:]
 
-#         # Create new sequence data_test for new dataset
-#         new_xTest = []
-#         new_yTest = new_data_scaled[train_size:]
-#         for i in range(SEQUENCE_DATA, len(new_data_test)):
-#             new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
+        # Create new sequence data_test for new dataset
+        new_xTest = []
+        new_yTest = new_data_scaled[train_size:]
+        for i in range(SEQUENCE_DATA, len(new_data_test)):
+            new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
         
-#         # Convert x and y to numpy
-#         new_xTest = np.array(new_xTest)
+        # Convert x and y to numpy
+        new_xTest = np.array(new_xTest)
 
-#         # Convert to array 3 dimension
-#         new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
+        # Convert to array 3 dimension
+        new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
 
-#         # Load model prediction
-#         model = load_model('trained_model.h5')
+        # Load model prediction
+        # model = load_model('trained_model.h5')
 
-#         # Make new predict for future
-#         new_predictions = model.predict(new_xTest)
+        # Make new predict for future
+        new_predictions = model.predict(new_xTest)
 
-#         # Transform to real values
-#         new_predictions = scaler.inverse_transform(new_predictions)
+        # Transform to real values
+        new_predictions = scaler.inverse_transform(new_predictions)
 
-#         # RMSE
-#         new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
-#         print('Root mean square (RMSE) - New:' + str(new_rmse))
-#         akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(new_rmse)
+        # RMSE
+        new_rmse = np.sqrt(np.mean(new_predictions - new_yTest) ** 2)
+        print('Root mean square (RMSE) - New:' + str(new_rmse))
+        akurasi = "Root Mean Squared Error (RMSE) pada data test: {:.2f}".format(new_rmse)
 
-#         # Create new dataframe for new_data_predictions, new_data_valid, new_data_train
-#         new_data_train = new_data.loc[train_size:]
-#         new_data_valid = new_data.loc[:train_size]
-#         new_data_predictions = pd.DataFrame(new_predictions, columns=['new_predictions'], index=new_data.index[-len(new_predictions):])
+        # Create new dataframe for new_data_predictions, new_data_valid, new_data_train
+        new_data_train = new_data.loc[train_size:]
+        new_data_valid = new_data.loc[:train_size]
+        new_data_predictions = pd.DataFrame(new_predictions, columns=['new_predictions'], index=new_data.index[-len(new_predictions):])
 
-#         # Concat
-#         new_dataset = pd.concat([new_data_valid, new_data_predictions], axis=1)
-#         return
-#     except pymysql.MySQLError as err:
-#         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
-#     except Exception as e:
-#         abort(HTTPStatus.BAD_REQUEST, description=str(e))
+        # Concat
+        new_dataset = pd.concat([new_data_valid, new_data_predictions], axis=1)
+        return
+    except pymysql.MySQLError as err:
+        abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
+    except Exception as e:
+        abort(HTTPStatus.BAD_REQUEST, description=str(e))
 
 # =================================================[ Routes - End ]
 

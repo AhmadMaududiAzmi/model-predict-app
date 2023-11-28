@@ -53,7 +53,7 @@ class Database:
             raise Exception(f'Failed to close the database connection due to: {e}')
 
 
-    def run_query(self, query):
+    def run_query(self, query, values=None):
         """Execute SQL query."""
         try:
             if not query or not isinstance(query, str):
@@ -63,7 +63,11 @@ class Database:
                 self.__open_connection()
                 
             with self.__conn.cursor() as cursor:
-                cursor.execute(query)
+                # cursor.execute(query)
+                if values is not None:
+                    cursor.execute(query, values)
+                else:
+                    cursor.execute(query)
                 if 'SELECT' in query.upper():
                     result = cursor.fetchall()
                 else:
