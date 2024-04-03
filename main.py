@@ -5,7 +5,7 @@ import os
 from io import BytesIO
 import pymysql
 import matplotlib.pyplot as plt
-import joblib
+# import joblib
 
 from http import HTTPStatus
 from flask_cors import CORS
@@ -14,13 +14,13 @@ from db import Database
 from config import DevelopmentConfig as devconf
 
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.metrics import mean_absolute_percentage_error, mean_squared_error
 
 import threading
 import tensorflow as tf
 from keras.models import Sequential, load_model
-from keras.layers import Dense, LSTM
+from keras.layers import Dense, LSTM, Dropout
 
 host = os.environ.get('FLASK_SERVER_HOST', devconf.HOST)
 port = os.environ.get('FLASK_SERVER_PORT', devconf.PORT)
@@ -55,15 +55,15 @@ db = Database(devconf)
 @app.route(f"{route_prefix}/traindata", methods=["GET"])
 def trainData():
     try:
-        nm_komoditas = request.args.get('komoditas_id', '')
-        nm_pasar = request.args.get('pasar_id', '')
-        tanggal_awal = request.args.get('start_date', '')
-        tanggal_akhir = request.args.get('end_date', '')
+        # nm_komoditas = request.args.get('komoditas_id', '')
+        # nm_pasar = request.args.get('pasar_id', '')
+        # tanggal_awal = request.args.get('start_date', '')
+        # tanggal_akhir = request.args.get('end_date', '')
 
-        # nm_komoditas = 8
-        # nm_pasar = 1
-        # tanggal_awal = '2016-01-01'
-        # tanggal_akhir = '2020-12-31'
+        nm_komoditas = 9
+        nm_pasar = 3
+        tanggal_awal = '2016-01-01'
+        tanggal_akhir = '2020-12-31'
 
         query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}'"
         records = db.run_query(query=query)
@@ -112,15 +112,17 @@ def trainData():
 
         # Model LSTM
         model = Sequential()
-        model.add(LSTM(64, return_sequences=True, input_shape=(xTrain_3d.shape[1], 1)))
-        model.add(LSTM(64, return_sequences=False))
+        model.add(LSTM(60, return_sequences=True, input_shape=(xTrain_3d.shape[1], 1)))
+        # model.add(Dropout(0.4))
+        model.add(LSTM(60, return_sequences=False))
+        # model.add(Dropout(0.4))
         model.add(Dense(25))
         model.add(Dense(1))
-        optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
-        model.compile(optimizer=optimizer, loss='mean_squared_error')
+        # optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+        model.compile(optimizer='adam', loss='mean_squared_error')
 
         # Train data
-        model.fit(xTrain_3d, yTrain, epochs=100, batch_size=32)
+        model.fit(xTrain_3d, yTrain, epochs=1, batch_size=1)
 
         # Prepare data test
         data_test = data_scaled[train_size - SEQUENCE_DATA:]
@@ -141,7 +143,6 @@ def trainData():
 
         # Melakukan prediksi pada data test
         predictions = model.predict(xTest_3d)
-        # Mengembalikan values data ke bentuk asal sebelum dinormalisasi
         predictions = scaler.inverse_transform(predictions) 
 
         # Mengembalikan nilai asli data test sebelum dinormalisasi (red: data_valid)
@@ -153,26 +154,36 @@ def trainData():
         akurasi = f"Root Mean Squared Error (RMSE) pada data test: {str(rmse)}"
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
+        # train = pd.DataFrame({'Train': data_train.flatten()})
+        train = pd.DataFrame({'Train': data['harga_current'][:train_size]}, index=data.index[:train_size])
+        train_data = train.dropna()
+        # valid = pd.DataFrame({'Validation': yTest_original.flatten()})
+        # predict = pd.DataFrame({'Predict': predictions.flatten()}, index=data.index[-len(predictions):])
         predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[-len(predictions):])
+        # predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[train_size:train_size+len(predictions)])
         predicted_data_json = predicted_data.to_json()
 
-        # merge_data = 
+        merge_data = pd.concat([train_data, predicted_data], axis=1)
+        merge_data_json = merge_data.to_json()
 
         # Simpan model LSTM ke dalam file sehingga saat penggunaan model saat prediksi tidak perlu train lagi
-        name_model = f"model_{nm_komoditas}_{nm_pasar}_{tanggal_awal}_{tanggal_akhir}.joblib"
-        joblib.dump(model, name_model)
-        session['name_model'] = name_model
+        # name_model = f"model_{nm_komoditas}_{nm_pasar}_{tanggal_awal}_{tanggal_akhir}.joblib"
+        # joblib.dump(model, name_model)
+        # session['name_model'] = name_model
+
+        name_model = f"model_{nm_komoditas}_{nm_pasar}_{tanggal_awal}_{tanggal_akhir}.h5"
+        model.save(name_model)
 
         save_to_database(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir, name_model, predicted_data_json)
 
-        response = {
-            'predicted_data': predicted_data.to_json(),
-            'model': name_model,
-            'akurasi': akurasi
-        }
+        response = [
+            {'rsme' : akurasi},
+            {'model' : name_model},
+            {'data' : predicted_data_json}
+        ]
 
-        # return jsonify(response)
-        return predicted_data.to_json()
+        return jsonify(response)
+        # return jsonify(dataframe_json)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
@@ -181,8 +192,9 @@ def trainData():
 # Save output to database
 def save_to_database(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir, name_model, predicted_data_json):
     try:
+        full_path = os.path.abspath(name_model)
         query = "INSERT INTO pertanian.hasil_prediksi (komoditas_id, pasar_id, tanggal_awal, tanggal_akhir, model, predicted_data) VALUES (%s, %s, %s, %s, %s, %s)"
-        values = (nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir, name_model, predicted_data_json)
+        values = (nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir, full_path, predicted_data_json)
         db.run_query(query=query, values=values)
         db.close_connection()
         return "Successfully saved to database"
@@ -203,10 +215,10 @@ def predictdata():
         # new_tanggal_akhir = int(request.args.get('new_predicted_data'))
         
         komoditas_id = 9
-        pasar_id = 12
-        tanggal_awal = datetime.strptime('2019-01-01', '%Y-%m-%d').date()
+        pasar_id = 3
+        tanggal_awal = datetime.strptime('2016-01-01', '%Y-%m-%d').date()
         tanggal_akhir = datetime.strptime('2020-12-31', '%Y-%m-%d').date()
-        new_tanggal_akhir = 120
+        new_tanggal_akhir = 90
 
         # Mengambil data untuk prediksi harga pada masa mendatang
         query_data = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{tanggal_akhir}' AND komoditas_id = '{komoditas_id}' AND pasar_id = '{pasar_id}'"
@@ -227,61 +239,49 @@ def predictdata():
         # Dataframe baru setelah penambahan data
         new_dataframe = pd.concat([data, new_data], ignore_index=True)
 
-        # Proses untuk mendapatkan input yang sesuai dengan model LSTM
-        # Normalisasi data
-        # data_harga = new_dataframe.iloc[:, new_dataframe.columns.get_loc('harga_current')]
+        # Proses untuk mendapatkan input yang sesuai dengan model LSTM -  Normalisasi data
         scaler = MinMaxScaler(feature_range=(0, 1))
-        # new_data_scaled = scaler.fit_transform(data_harga.values.reshape(-1, 1))
         new_data_scaled = scaler.fit_transform(new_dataframe['harga_current'].values.reshape(-1, 1))
-        # new_data_json = json.dumps(new_data_scaled.tolist())
 
         # Prepare dataset
-        # Pembentukan sequences data / data time series dari data test untuk model prediksi
-        new_data_test = new_data_scaled[-new_tanggal_akhir:]
-        # jumlah_data = f"Jumlah data = {new_data_test.shape}"
-
         SEQUENCE_DATA = 60
+        new_data_test = new_data_scaled[-new_tanggal_akhir - SEQUENCE_DATA:]  # Ambil data untuk prediksi, termasuk SEQUENCE_DATA sebelumnya
+        # jumlah_data = f"Jumlah data: {new_data_test.shape}"
+
         new_xTest = []
-        # for i in range(SEQUENCE_DATA, len(new_data_scaled)):
-        #     new_xTest.append(new_data_scaled[i - SEQUENCE_DATA:i, 0])
-        
         for i in range(SEQUENCE_DATA, len(new_data_test)):
             new_xTest.append(new_data_test[i - SEQUENCE_DATA:i, 0])
 
-        new_xTest= np.array(new_xTest)
-        jumlah_xTest = f"Jumlah data =  {len(new_xTest)}"
+        new_xTest = np.array(new_xTest)
+        # jumlah_data = f"Jumlah data: {len(new_xTest)}"
 
         # Bentuk ulang x dan y tested data menjadi array 3 dimensi
         new_xTest_3d = np.reshape(new_xTest, (new_xTest.shape[0], SEQUENCE_DATA, 1))
-        data_xTest_3d = f"Bentuk data array 3 dimensi xTrain = {new_xTest_3d.shape}"
+        data_xTest_3d = f"Bentuk data array 3 dimensi new_xTrain = {new_xTest_3d.shape}"
 
-        # Model prediksi
+        # Ambil jalur file model dari database
         query_model = f"SELECT model FROM hasil_prediksi WHERE komoditas_id = '{komoditas_id}' AND pasar_id = '{pasar_id}' AND tanggal_awal = '{tanggal_awal}' AND tanggal_akhir = '{tanggal_akhir}'"
         result_model = db.run_query(query=query_model)
         db.close_connection()
 
-        # Load model dari direktori dan prediksi data baru
+        # Load model dari jalur yang diambil dari database
         model_path = result_model[0][0]
-        model = joblib.load(model_path)
+        model = load_model(model_path)
+
+        # Gunakan model untuk memprediksi data baru
         new_predictions = model.predict(new_xTest_3d)
 
         # Invers transformasi untuk mendapatkan nilai asli
         new_predictions_data = scaler.inverse_transform(new_predictions)
 
-        # Update nilai harga_current dengan hasil prediksi
-        # new_data['harga_current'] = new_data['harga_current'].replace(0, new_predictions_data)
-
-        # Menggabungkan hasil prediksi dengan tanggal
-        # new_predicted_data = pd.DataFrame({'tanggal': new_dataframe['tanggal'], 'Predicted': new_predictions_data.flatten()}).reset_index(drop=True)
-        new_predicted_data = pd.DataFrame({'Predicted': new_predictions_data.flatten()}).reset_index(drop=True)
+        # Membuat dataframe untuk hasil prediksi baru
+        new_predicted_data = pd.DataFrame({'tanggal': pd.date_range(start=tanggal_akhir + timedelta(days=1), end=new_data_tanggal_akhir), 'Predicted': new_predictions_data.flatten()})
 
         return jsonify(new_predicted_data.to_json(orient='records'))
-        # return jsonify(jumlah_xTest)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
         abort(HTTPStatus.BAD_REQUEST, description=str(e))
-
 # =================================================[ Routes - End ]
 
 # ================================[ Error Handler Defined - Start ]
