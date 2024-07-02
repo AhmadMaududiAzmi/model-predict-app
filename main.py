@@ -5,7 +5,7 @@ import os
 from io import BytesIO
 import pymysql
 import matplotlib.pyplot as plt
-# import joblib
+import joblib
 
 from http import HTTPStatus
 from flask_cors import CORS
@@ -61,7 +61,7 @@ def trainData():
         # tanggal_akhir = request.args.get('end_date', '')
 
         nm_komoditas = 8
-        nm_pasar = 3
+        nm_pasar = 1
         tanggal_awal = '2016-01-01'
         tanggal_akhir = '2020-12-31'
 
@@ -78,7 +78,8 @@ def trainData():
         # Preprocessing data - Handling missing values dengan imputasi nilai mean
         avg_harga_current = data['harga_current'].mean()
         data['harga_current'] = data['harga_current'].replace(0, avg_harga_current)
-        dataframe_json = data.reset_index().to_json(orient='records')
+        # dataframe_json = data.reset_index().to_json(orient='records')
+        # dataframe_json = data.to_json(orient='records')
 
         # Preprocessing Data - Identify dan Handling Outliers dengan Interquartile Range dan imputasi nilai median
         Q1 = data['harga_current'].quantile(0.25)
@@ -87,11 +88,16 @@ def trainData():
         outliers = data['harga_current'][(data['harga_current'] < (Q1 - 1.5 * IQR)) | (data['harga_current'] > (Q3 + 1.5 * IQR))]
         median_harga = data['harga_current'].median()
         data['harga_current'][outliers.index] = median_harga
+        dataframe_json = data.to_json()
 
         # Preprocessing Data - Normalisasi data
         scaler = MinMaxScaler(feature_range=(0, 1))
         data_scaled = scaler.fit_transform(data[['harga_current']])
-        data_json = json.dumps(data_scaled.tolist())
+        dataframe_scaled = pd.DataFrame(data_scaled, columns=['harga_scaled'], index=data.index)
+        # Simpan scaler
+        name_scaler = f"data_scaled_{nm_komoditas}_{nm_pasar}_{tanggal_awal}_{tanggal_akhir}.pkl"
+        joblib.dump(scaler, name_scaler)
+        dataframe_json = dataframe_scaled.to_json()
 
         # Pembagian data train dan data test
         PERCENTAGE = 0.8 # Persentase data train (80%)
@@ -120,9 +126,9 @@ def trainData():
         # Model LSTM
         model = Sequential()
         model.add(LSTM(60, return_sequences=True, input_shape=(xTrain_3d.shape[1], 1)))
-        # model.add(Dropout(0.4))
+        model.add(Dropout(0.4))
         model.add(LSTM(60, return_sequences=False))
-        # model.add(Dropout(0.4))
+        model.add(Dropout(0.4))
         model.add(Dense(25))
         model.add(Dense(1))
         # optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
@@ -162,7 +168,8 @@ def trainData():
 
         # Pembuatan dataframe setelah dilakukan pelatihan model
         # predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[-len(predictions):])
-        predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[train_size:train_size+len(predictions)])
+        # predicted_data = pd.DataFrame({'Predicted': predictions.flatten(), 'Actual': yTest_original.flatten()}, index=data.index[train_size:train_size+len(predictions)])
+        predicted_data = pd.DataFrame({'Predicted': predictions.flatten()}, index=data.index[train_size:train_size+len(predictions)])
         predicted_data_json = predicted_data.to_json()
 
         # Gabungkan data historis dan hasil prediksi
@@ -176,13 +183,14 @@ def trainData():
 
         save_to_database(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir, name_model, combined_data_json)
 
-        # response = [
-        #     {'rsme' : akurasi},
-        #     {'model' : name_model},
-        #     {'data' : predicted_data_json}
-        # ]
+        response = [
+            {'rsme' : akurasi},
+            {'model' : name_model},
+            {'data' : predicted_data_json}
+        ]
 
         return jsonify(combined_data_json)
+        # return jsonify(dataframe_json)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
@@ -213,38 +221,68 @@ def predictdata():
         # new_tanggal_akhir = int(request.args.get('new_predicted_data'))
         
         komoditas_id = 8
-        pasar_id = 3
-        tanggal_awal = datetime.strptime('2016-01-01', '%Y-%m-%d').date()
-        tanggal_akhir = datetime.strptime('2020-12-31', '%Y-%m-%d').date()
-        new_tanggal_akhir = 90
+        pasar_id = 1
+        # tanggal_awal = datetime.strptime('2016-01-01', '%Y-%m-%d').date()
+        # tanggal_akhir = datetime.strptime('2020-12-31', '%Y-%m-%d').date()
+        tanggal_awal = '2016-01-01' # test
+        tanggal_akhir = '2020-12-31' # test
+        tanggal_awal_dt = datetime.strptime(tanggal_awal, '%Y-%m-%d') # test
+        tanggal_akhir_dt = datetime.strptime(tanggal_akhir, '%Y-%m-%d') # test
+        new_tanggal_akhir = 365
 
-        # Mengambil data untuk prediksi harga pada masa mendatang
         query_data = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{tanggal_akhir}' AND komoditas_id = '{komoditas_id}' AND pasar_id = '{pasar_id}'"
         result_data = db.run_query(query=query_data)
         db.close_connection()
 
-        # Dataframe data prediksi
+        # Pembuatan dataframe
         data = pd.DataFrame(result_data, columns=['tanggal', 'harga_current'])
+        data['tanggal'] = pd.to_datetime(data['tanggal']) # test
+        data.set_index('tanggal', inplace=True) # test
+        # dataframe_json = data.to_json(orient='records')
 
-        # Pengisian missing value dengan rata-rata harga
+        # Preprocessing Data - Handling missing values
         new_avg_harga_current = data['harga_current'].mean()
         data['harga_current'] = data['harga_current'].replace(0, new_avg_harga_current)
+        # dataframe_json = data.to_json(orient='records')
 
-        # Penambahan data baru ke dalam dataframe (dataframe baru)
-        new_data_tanggal_akhir = tanggal_akhir + timedelta(days=new_tanggal_akhir)
-        new_data = pd.DataFrame({'tanggal': pd.date_range(start=tanggal_akhir + timedelta(days=1), end=new_data_tanggal_akhir), 'harga_current': 0})
+        # Preprocessing data - Identify dan handling outliers
+        Q1 = data['harga_current'].quantile(0.25)
+        Q3 = data['harga_current'].quantile(0.75)
+        IQR = Q3 - Q1
+        outliers = data['harga_current'][(data['harga_current'] < (Q1 - 1.5 * IQR)) | (data['harga_current'] > (Q3 + 1.5 * IQR))]
+        median_harga = data['harga_current'].median()
+        data['harga_current'][outliers.index] = median_harga
+        # dataframe_json = data.to_json()
 
-        # Dataframe baru setelah penambahan data
-        new_dataframe = pd.concat([data, new_data], ignore_index=True)
+        # Pembuatan data baru
+        new_data_tanggal_akhir = tanggal_akhir_dt + timedelta(days=new_tanggal_akhir)
+        # new_data = pd.DataFrame(
+        #     {'harga_current': [0.0] * (new_data_tanggal_akhir - tanggal_akhir).days},
+        #     index=pd.date_range(start=tanggal_akhir + timedelta(days=1), end=new_data_tanggal_akhir)
+        # )
+        new_data = pd.DataFrame(
+            {'harga_current': [data['harga_current'].mean()] * (new_data_tanggal_akhir - tanggal_akhir_dt).days},
+            index=pd.date_range(start=tanggal_akhir_dt + timedelta(days=1), end=new_data_tanggal_akhir)
+        )
+        # dataframe_json = new_data.to_json()
 
-        # Proses untuk mendapatkan input yang sesuai dengan model LSTM -  Normalisasi data
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        new_data_scaled = scaler.fit_transform(new_dataframe['harga_current'].values.reshape(-1, 1))
+        # Penambahan data baru ke dalam dataframe
+        new_dataframe = pd.concat([data, new_data])
+        # dataframe_json = new_dataframe.to_json()
 
-        # Prepare dataset
+        # Preprocessing data - Normalisasi data
+        # Muat scaler
+        name_scaler = f"data_scaled_{komoditas_id}_{pasar_id}_{tanggal_awal}_{tanggal_akhir}.pkl"
+        scaler = joblib.load(name_scaler)
+        # scaler = MinMaxScaler(feature_range=(0, 1))
+        new_data_scaled = scaler.transform(new_dataframe[['harga_current']])
+        new_dataframe_scaled = pd.DataFrame(new_data_scaled, columns=['harga_scaled'], index=new_dataframe.index)
+        # dataframe_json = new_dataframe_scaled.to_json()
+
+        # Pembentukan data sequences dari data test
         SEQUENCE_DATA = 60
-        new_data_test = new_data_scaled[-new_tanggal_akhir - SEQUENCE_DATA:]  # Ambil data untuk prediksi, termasuk SEQUENCE_DATA sebelumnya
-        # jumlah_data = f"Jumlah data: {new_data_test.shape}"
+        new_data_test = new_data_scaled[-new_tanggal_akhir - SEQUENCE_DATA:]
+        dataframe_json = f"Jumlah data: {new_data_test.shape}"
 
         new_xTest = []
         for i in range(SEQUENCE_DATA, len(new_data_test)):
@@ -273,9 +311,10 @@ def predictdata():
         new_predictions_data = scaler.inverse_transform(new_predictions)
 
         # Membuat dataframe untuk hasil prediksi baru
-        new_predicted_data = pd.DataFrame({'tanggal': pd.date_range(start=tanggal_akhir + timedelta(days=1), end=new_data_tanggal_akhir), 'Predicted': new_predictions_data.flatten()})
+        new_predicted_data = pd.DataFrame({'tanggal': pd.date_range(start=tanggal_akhir_dt + timedelta(days=1), end=new_data_tanggal_akhir), 'Predicted': new_predictions_data.flatten()})
 
         return jsonify(new_predicted_data.to_json(orient='records'))
+        # return jsonify(dataframe_json)
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
