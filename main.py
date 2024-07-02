@@ -314,7 +314,7 @@ def predictdata():
         new_predicted_data = pd.DataFrame({'tanggal': pd.date_range(start=tanggal_akhir_dt + timedelta(days=1), end=new_data_tanggal_akhir), 'Predicted': new_predictions_data.flatten()})
 
         return jsonify(new_predicted_data.to_json(orient='records'))
-        # return jsonify(dataframe_json)
+        # return jsonify(dataframe_json) 
     except pymysql.MySQLError as err:
         abort(HTTPStatus.INTERNAL_SERVER_ERROR, description=str(err))
     except Exception as e:
