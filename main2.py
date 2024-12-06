@@ -56,11 +56,11 @@ db = Database(devconf)
 
 # ==============================================[ Variables - Start ]
 PERCENTAGE_TRAIN = 0.8
-SEQUENCE_LENGTH = 92
+SEQUENCE_LENGTH = 7
 LAYERS = 3
-NEURONS_1 = 64
-NEURONS_2 = 64
-NEURONS_3 = 64
+NEURONS_1 = 60
+NEURONS_2 = 60
+NEURONS_3 = 60
 DROPOUT_RATE = 0.4
 LEARN_RATE = 0.0001
 BATCH_SIZE = 32
@@ -113,7 +113,7 @@ def create_dataset(data, n_sequence):
 def train():
     try:
         nm_komoditas = 8
-        nm_pasar = 3
+        nm_pasar = 1
         tanggal_awal = '2016-01-01'
         tanggal_akhir = '2020-12-31'
 
@@ -158,17 +158,18 @@ def train():
         data_xTrain_3d = f"Bentuk data array 3 dimensi xTrain = {xTrain_3d.shape}"
 
         model = Sequential()
-        model.add(LSTM(64, return_sequences=True, input_shape=(xTrain_3d.shape[1], 1)))
+        model.add(LSTM(60, return_sequences=True, input_shape=(xTrain_3d.shape[1], 1)))
         model.add(Dropout(0.4))
-        model.add(LSTM(64, return_sequences=True))
-        model.add(LSTM(64))
+        model.add(LSTM(60, return_sequences=True))
+        model.add(Dropout(0.4))
+        model.add(LSTM(60))
         model.add(Dense(25))
         model.add(Dense(1))
         # model.compile(optimizer='adam', loss='mean_squared_error')
-        model.compile(loss = MeanSquaredError(), optimizer = Adam(learning_rate = 0.0001), metrics= [RootMeanSquaredError()])
+        model.compile(loss = MeanSquaredError(), optimizer = Adam(learning_rate = 0.001), metrics= [RootMeanSquaredError()])
         
         # model.fit(xTrain_3d, yTrain, epochs=100, batch_size=32)
-        model.fit(xTrain_3d, yTrain, epochs=100, batch_size=32)
+        model.fit(xTrain_3d, yTrain, epochs=10, batch_size=32)
         # history = model.fit(xTrain_3d, yTrain, validation_data=(xVal_3d, yVal), epochs=50, batch_size=32)
 
         name_model = f"model_{nm_komoditas}_{nm_pasar}_{tanggal_awal}_{tanggal_akhir}.h5"
@@ -204,7 +205,7 @@ def train():
 def test():
     try:
         nm_komoditas = 8
-        nm_pasar = 3
+        nm_pasar = 1
         test_tanggal_awal = '2016-01-01'
         test_tanggal_akhir = '2020-12-31'
         tanggal_awal = '2016-01-01' # get model
@@ -250,8 +251,8 @@ def test():
         actual_values = scaler.inverse_transform(yTest.reshape(-1,1))
         predictions_values = scaler.inverse_transform(predictions.reshape(-1,1))
 
-        predictions_list = predictions_values.tolist()
-        predictions_json = json.dumps(predictions_list)
+        # predictions_list = predictions_values.tolist()
+        # predictions_json = json.dumps(predictions_list)
 
         results = pd.DataFrame({
             'tanggal': data.index[train_size + SEQUENCE_LENGTH:],
@@ -259,10 +260,15 @@ def test():
             'harga_predicted': predictions_values.flatten()
         })
 
-        update_database(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir, name_model, predictions_json)
+        update_database(nm_komoditas, nm_pasar, tanggal_awal, tanggal_akhir, name_model, predictions_values)
 
-        # rmse = np.sqrt(np.mean((scaler.inverse_transform(yTest.reshape(-1, 1)) - predictions_values) ** 2))
+        # Evaluasi
+        # mse = mean_squared_error(actual_values, predictions_values)
         rmse = np.sqrt((np.mean(actual_values - predictions_values) ** 2))
+        # rmse = np.sqrt(mse)
+        # mape = mean_absolute_percentage_error(actual_values, predictions_values)
+        # deviation = np.mean(actual_values - predictions_values)
+        # akurasi = f"MSE: {mse:.2f}, RMSE: {rmse:.2f}, MAPE: {mape:.2f}, Deviasi: {deviation:.2f}"
         akurasi = f"RMSE: {rmse:.2f}"
 
         plt.figure(figsize=(14, 7))
@@ -291,11 +297,11 @@ def test():
 def predict():
     try:
         nm_komoditas = 8
-        nm_pasar = 3
+        nm_pasar = 1
         tanggal_awal = '2016-01-01'
         tanggal_akhir = '2020-12-31' # get model
         new_tanggal_akhir = '2020-12-31'
-        n_days = 35
+        n_days = 61
 
         query = f"SELECT tanggal, harga_current FROM daftar_harga WHERE tanggal >= '{tanggal_awal}' AND tanggal <= '{new_tanggal_akhir}' AND komoditas_id = '{nm_komoditas}' AND pasar_id = '{nm_pasar}'"
         records = db.run_query(query=query)
@@ -321,6 +327,12 @@ def predict():
         name_model = f"model_{nm_komoditas}_{nm_pasar}_{tanggal_awal}_{tanggal_akhir}.h5"
         model = load_model(name_model)
 
+        # query_test_result = f"SELECT test_result FROM hasil_prediksi WHERE komoditas_id = {nm_komoditas} AND pasar_id = {nm_pasar} AND tanggal_awal = {tanggal_awal} AND tanggal_akhir = {tanggal_akhir}"
+        # records_test_result = db.run_query(query=query_test_result)
+        # db.close_connection()
+
+        # test_result = pd.DataFrame(records_test_result)
+
         predictions = []
         last_seq = data_scaled[-SEQUENCE_LENGTH:]
         for _ in range(n_days):
@@ -339,7 +351,7 @@ def predict():
         })
 
         plt.figure(figsize=(14, 7))
-        plt.plot(data.index, data['harga_current'], label='Actual Prices', color='blue')
+        # plt.plot(data.index, data['harga_current'], label='Actual Prices', color='blue')
         # plt.plot(data.index, test_result, label='Prediction Price', color='orange')
         plt.plot(results['tanggal'], results['harga_predicted'], label='Predicted Prices', color='red')
         plt.xlabel('Date')
